@@ -1,10 +1,7 @@
-import { Source, isSource } from '../language/source.ts';
+import { printBlockString } from '../language/blockString.ts';
+import { isPunctuatorTokenKind, Lexer } from '../language/lexer.ts';
+import { isSource, Source } from '../language/source.ts';
 import { TokenKind } from '../language/tokenKind.ts';
-import { Lexer, isPunctuatorTokenKind } from '../language/lexer.ts';
-import {
-  dedentBlockStringValue,
-  getBlockStringIndentation,
-} from '../language/blockString.ts';
 /**
  * Strips characters that are not significant to the validity or execution
  * of a GraphQL document:
@@ -65,14 +62,12 @@ import {
  * """Type description""" type Foo{"""Field description""" bar:String}
  * ```
  */
-
 export function stripIgnoredCharacters(source: string | Source): string {
   const sourceObj = isSource(source) ? source : new Source(source);
   const body = sourceObj.body;
   const lexer = new Lexer(sourceObj);
   let strippedBody = '';
   let wasLastAddedTokenNonPunctuator = false;
-
   while (lexer.advance().kind !== TokenKind.EOF) {
     const currentToken = lexer.token;
     const tokenKind = currentToken.kind;
@@ -81,43 +76,19 @@ export function stripIgnoredCharacters(source: string | Source): string {
      * Also prevent case of non-punctuator token following by spread resulting
      * in invalid token (e.g. `1...` is invalid Float token).
      */
-
     const isNonPunctuator = !isPunctuatorTokenKind(currentToken.kind);
-
     if (wasLastAddedTokenNonPunctuator) {
       if (isNonPunctuator || currentToken.kind === TokenKind.SPREAD) {
         strippedBody += ' ';
       }
     }
-
     const tokenBody = body.slice(currentToken.start, currentToken.end);
-
     if (tokenKind === TokenKind.BLOCK_STRING) {
-      strippedBody += dedentBlockString(tokenBody);
+      strippedBody += printBlockString(currentToken.value, { minimize: true });
     } else {
       strippedBody += tokenBody;
     }
-
     wasLastAddedTokenNonPunctuator = isNonPunctuator;
   }
-
   return strippedBody;
-}
-
-function dedentBlockString(blockStr: string): string {
-  // skip leading and trailing triple quotations
-  const rawStr = blockStr.slice(3, -3);
-  let body = dedentBlockStringValue(rawStr);
-
-  if (getBlockStringIndentation(body) > 0) {
-    body = '\n' + body;
-  }
-
-  const hasTrailingQuote = body.endsWith('"') && !body.endsWith('\\"""');
-
-  if (hasTrailingQuote || body.endsWith('\\')) {
-    body += '\n';
-  }
-
-  return '"""' + body + '"""';
 }

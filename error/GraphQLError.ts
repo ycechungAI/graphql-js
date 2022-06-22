@@ -1,13 +1,13 @@
 import { isObjectLike } from '../jsutils/isObjectLike.ts';
 import type { Maybe } from '../jsutils/Maybe.ts';
 import type { ASTNode, Location } from '../language/ast.ts';
-import type { Source } from '../language/source.ts';
 import type { SourceLocation } from '../language/location.ts';
 import { getLocation } from '../language/location.ts';
 import {
   printLocation,
   printSourceLocation,
 } from '../language/printLocation.ts';
+import type { Source } from '../language/source.ts';
 /**
  * Custom extensions
  *
@@ -17,9 +17,20 @@ import {
  * the risk of conflicts. We recommend you add at most one extension field,
  * an object which can contain all the values you need.
  */
-
 export interface GraphQLErrorExtensions {
   [attributeName: string]: unknown;
+}
+export interface GraphQLErrorOptions {
+  nodes?: ReadonlyArray<ASTNode> | ASTNode | null;
+  source?: Maybe<Source>;
+  positions?: Maybe<ReadonlyArray<number>>;
+  path?: Maybe<ReadonlyArray<string | number>>;
+  originalError?: Maybe<
+    Error & {
+      readonly extensions?: unknown;
+    }
+  >;
+  extensions?: Maybe<GraphQLErrorExtensions>;
 }
 /**
  * A GraphQLError describes an Error found during the parse, validate, or
@@ -27,7 +38,6 @@ export interface GraphQLErrorExtensions {
  * and stack trace, it also includes information about the locations in a
  * GraphQL document and/or execution result that correspond to the Error.
  */
-
 export class GraphQLError extends Error {
   /**
    * An array of `{ line, column }` locations within the source GraphQL document
@@ -46,12 +56,10 @@ export class GraphQLError extends Error {
    *
    * Enumerable, and appears in the result of JSON.stringify().
    */
-
   readonly path: ReadonlyArray<string | number> | undefined;
   /**
    * An array of GraphQL AST Nodes corresponding to this error.
    */
-
   readonly nodes: ReadonlyArray<ASTNode> | undefined;
   /**
    * The source GraphQL document for the first location of this error.
@@ -59,43 +67,28 @@ export class GraphQLError extends Error {
    * Note that if this Error represents more than one node, the source may not
    * represent nodes after the first node.
    */
-
   readonly source: Source | undefined;
   /**
    * An array of character offsets within the source GraphQL document
    * which correspond to this error.
    */
-
   readonly positions: ReadonlyArray<number> | undefined;
   /**
    * The original error thrown from a field resolver during execution.
    */
-
   readonly originalError: Error | undefined;
   /**
    * Extension fields to add to the formatted error.
    */
-
   readonly extensions: GraphQLErrorExtensions;
-
-  constructor(
-    message: string,
-    nodes?: ReadonlyArray<ASTNode> | ASTNode | null,
-    source?: Maybe<Source>,
-    positions?: Maybe<ReadonlyArray<number>>,
-    path?: Maybe<ReadonlyArray<string | number>>,
-    originalError?: Maybe<
-      Error & {
-        readonly extensions?: unknown;
-      }
-    >,
-    extensions?: Maybe<GraphQLErrorExtensions>,
-  ) {
+  constructor(message: string, options: GraphQLErrorOptions = {}) {
+    const { nodes, source, positions, path, originalError, extensions } =
+      options;
     super(message);
     this.name = 'GraphQLError';
     this.path = path ?? undefined;
-    this.originalError = originalError ?? undefined; // Compute list of blame nodes.
-
+    this.originalError = originalError ?? undefined;
+    // Compute list of blame nodes.
     this.nodes = undefinedIfEmpty(
       Array.isArray(nodes) ? nodes : nodes ? [nodes] : undefined,
     );
@@ -103,8 +96,8 @@ export class GraphQLError extends Error {
       this.nodes
         ?.map((node) => node.loc)
         .filter((loc): loc is Location => loc != null),
-    ); // Compute locations in the source for the given nodes/positions.
-
+    );
+    // Compute locations in the source for the given nodes/positions.
     this.source = source ?? nodeLocations?.[0]?.source;
     this.positions = positions ?? nodeLocations?.map((loc) => loc.start);
     this.locations =
@@ -114,32 +107,23 @@ export class GraphQLError extends Error {
     const originalExtensions = isObjectLike(originalError?.extensions)
       ? originalError?.extensions
       : undefined;
-    this.extensions = extensions ?? originalExtensions ?? Object.create(null); // Only properties prescribed by the spec should be enumerable.
+    this.extensions = extensions ?? originalExtensions ?? Object.create(null);
+    // Only properties prescribed by the spec should be enumerable.
     // Keep the rest as non-enumerable.
-
     Object.defineProperties(this, {
       message: {
         writable: true,
         enumerable: true,
       },
-      name: {
-        enumerable: false,
-      },
-      nodes: {
-        enumerable: false,
-      },
-      source: {
-        enumerable: false,
-      },
-      positions: {
-        enumerable: false,
-      },
-      originalError: {
-        enumerable: false,
-      },
-    }); // Include (non-enumerable) stack trace.
-    // istanbul ignore next (See: 'https://github.com/graphql/graphql-js/issues/2317')
-
+      name: { enumerable: false },
+      nodes: { enumerable: false },
+      source: { enumerable: false },
+      positions: { enumerable: false },
+      originalError: { enumerable: false },
+    });
+    // Include (non-enumerable) stack trace.
+    /* c8 ignore start */
+    // FIXME: https://github.com/graphql/graphql-js/issues/2317
     if (originalError?.stack) {
       Object.defineProperty(this, 'stack', {
         value: originalError.stack,
@@ -155,15 +139,13 @@ export class GraphQLError extends Error {
         configurable: true,
       });
     }
+    /* c8 ignore stop */
   }
-
   get [Symbol.toStringTag](): string {
     return 'GraphQLError';
   }
-
   toString(): string {
     let output = this.message;
-
     if (this.nodes) {
       for (const node of this.nodes) {
         if (node.loc) {
@@ -175,10 +157,8 @@ export class GraphQLError extends Error {
         output += '\n\n' + printSourceLocation(this.source, location);
       }
     }
-
     return output;
   }
-
   toJSON(): GraphQLFormattedError {
     type WritableFormattedError = {
       -readonly [P in keyof GraphQLFormattedError]: GraphQLFormattedError[P];
@@ -186,23 +166,18 @@ export class GraphQLError extends Error {
     const formattedError: WritableFormattedError = {
       message: this.message,
     };
-
     if (this.locations != null) {
       formattedError.locations = this.locations;
     }
-
     if (this.path != null) {
       formattedError.path = this.path;
     }
-
     if (this.extensions != null && Object.keys(this.extensions).length > 0) {
       formattedError.extensions = this.extensions;
     }
-
     return formattedError;
   }
 }
-
 function undefinedIfEmpty<T>(
   array: Array<T> | undefined,
 ): Array<T> | undefined {
@@ -211,7 +186,6 @@ function undefinedIfEmpty<T>(
 /**
  * See: https://spec.graphql.org/draft/#sec-Errors
  */
-
 export interface GraphQLFormattedError {
   /**
    * A short, human-readable summary of the problem that **SHOULD NOT** change
@@ -223,7 +197,6 @@ export interface GraphQLFormattedError {
    * If an error can be associated to a particular point in the requested
    * GraphQL document, it should contain a list of locations.
    */
-
   readonly locations?: ReadonlyArray<SourceLocation>;
   /**
    * If an error can be associated to a particular field in the GraphQL result,
@@ -231,34 +204,12 @@ export interface GraphQLFormattedError {
    * the response field which experienced the error. This allows clients to
    * identify whether a null result is intentional or caused by a runtime error.
    */
-
   readonly path?: ReadonlyArray<string | number>;
   /**
    * Reserved for implementors to extend the protocol however they see fit,
    * and hence there are no additional restrictions on its contents.
    */
-
   readonly extensions?: {
     [key: string]: unknown;
   };
-}
-/**
- * Prints a GraphQLError to a string, representing useful location information
- * about the error's position in the source.
- *
- * @deprecated Please use `error.toString` instead. Will be removed in v17
- */
-
-export function printError(error: GraphQLError): string {
-  return error.toString();
-}
-/**
- * Given a GraphQLError, format it according to the rules described by the
- * Response Format, Errors section of the GraphQL Specification.
- *
- * @deprecated Please use `error.toString` instead. Will be removed in v17
- */
-
-export function formatError(error: GraphQLError): GraphQLFormattedError {
-  return error.toJSON();
 }

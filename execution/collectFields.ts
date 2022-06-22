@@ -1,31 +1,31 @@
+import { AccumulatorMap } from '../jsutils/AccumulatorMap.ts';
 import type { ObjMap } from '../jsutils/ObjMap.ts';
 import type {
-  SelectionSetNode,
   FieldNode,
+  FragmentDefinitionNode,
   FragmentSpreadNode,
   InlineFragmentNode,
-  FragmentDefinitionNode,
+  SelectionSetNode,
 } from '../language/ast.ts';
 import { Kind } from '../language/kinds.ts';
-import type { GraphQLSchema } from '../type/schema.ts';
 import type { GraphQLObjectType } from '../type/definition.ts';
+import { isAbstractType } from '../type/definition.ts';
 import {
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
 } from '../type/directives.ts';
-import { isAbstractType } from '../type/definition.ts';
+import type { GraphQLSchema } from '../type/schema.ts';
 import { typeFromAST } from '../utilities/typeFromAST.ts';
 import { getDirectiveValues } from './values.ts';
 /**
- * Given a selectionSet, collect all of the fields and returns it at the end.
+ * Given a selectionSet, collects all of the fields and returns them.
  *
- * CollectFields requires the "runtime type" of an object. For a field which
+ * CollectFields requires the "runtime type" of an object. For a field that
  * returns an Interface or Union type, the "runtime type" will be the actual
- * Object type returned by that field.
+ * object type returned by that field.
  *
  * @internal
  */
-
 export function collectFields(
   schema: GraphQLSchema,
   fragments: ObjMap<FragmentDefinitionNode>,
@@ -35,7 +35,7 @@ export function collectFields(
   runtimeType: GraphQLObjectType,
   selectionSet: SelectionSetNode,
 ): Map<string, ReadonlyArray<FieldNode>> {
-  const fields = new Map();
+  const fields = new AccumulatorMap<string, FieldNode>();
   collectFieldsImpl(
     schema,
     fragments,
@@ -49,15 +49,14 @@ export function collectFields(
 }
 /**
  * Given an array of field nodes, collects all of the subfields of the passed
- * in fields, and returns it at the end.
+ * in fields, and returns them at the end.
  *
- * CollectFields requires the "return type" of an object. For a field which
+ * CollectSubFields requires the "return type" of an object. For a field that
  * returns an Interface or Union type, the "return type" will be the actual
- * Object type returned by that field.
+ * object type returned by that field.
  *
  * @internal
  */
-
 export function collectSubfields(
   schema: GraphQLSchema,
   fragments: ObjMap<FragmentDefinitionNode>,
@@ -67,9 +66,8 @@ export function collectSubfields(
   returnType: GraphQLObjectType,
   fieldNodes: ReadonlyArray<FieldNode>,
 ): Map<string, ReadonlyArray<FieldNode>> {
-  const subFieldNodes = new Map();
+  const subFieldNodes = new AccumulatorMap<string, FieldNode>();
   const visitedFragmentNames = new Set<string>();
-
   for (const node of fieldNodes) {
     if (node.selectionSet) {
       collectFieldsImpl(
@@ -83,10 +81,9 @@ export function collectSubfields(
       );
     }
   }
-
   return subFieldNodes;
 }
-
+// eslint-disable-next-line max-params
 function collectFieldsImpl(
   schema: GraphQLSchema,
   fragments: ObjMap<FragmentDefinitionNode>,
@@ -95,7 +92,7 @@ function collectFieldsImpl(
   },
   runtimeType: GraphQLObjectType,
   selectionSet: SelectionSetNode,
-  fields: Map<string, Array<FieldNode>>,
+  fields: AccumulatorMap<string, FieldNode>,
   visitedFragmentNames: Set<string>,
 ): void {
   for (const selection of selectionSet.selections) {
@@ -104,19 +101,9 @@ function collectFieldsImpl(
         if (!shouldIncludeNode(variableValues, selection)) {
           continue;
         }
-
-        const name = getFieldEntryKey(selection);
-        const fieldList = fields.get(name);
-
-        if (fieldList !== undefined) {
-          fieldList.push(selection);
-        } else {
-          fields.set(name, [selection]);
-        }
-
+        fields.add(getFieldEntryKey(selection), selection);
         break;
       }
-
       case Kind.INLINE_FRAGMENT: {
         if (
           !shouldIncludeNode(variableValues, selection) ||
@@ -124,7 +111,6 @@ function collectFieldsImpl(
         ) {
           continue;
         }
-
         collectFieldsImpl(
           schema,
           fragments,
@@ -136,27 +122,22 @@ function collectFieldsImpl(
         );
         break;
       }
-
       case Kind.FRAGMENT_SPREAD: {
         const fragName = selection.name.value;
-
         if (
           visitedFragmentNames.has(fragName) ||
           !shouldIncludeNode(variableValues, selection)
         ) {
           continue;
         }
-
         visitedFragmentNames.add(fragName);
         const fragment = fragments[fragName];
-
         if (
           !fragment ||
           !doesFragmentConditionMatch(schema, fragment, runtimeType)
         ) {
           continue;
         }
-
         collectFieldsImpl(
           schema,
           fragments,
@@ -175,7 +156,6 @@ function collectFieldsImpl(
  * Determines if a field should be included based on the `@include` and `@skip`
  * directives, where `@skip` has higher precedence than `@include`.
  */
-
 function shouldIncludeNode(
   variableValues: {
     [variable: string]: unknown;
@@ -183,54 +163,43 @@ function shouldIncludeNode(
   node: FragmentSpreadNode | FieldNode | InlineFragmentNode,
 ): boolean {
   const skip = getDirectiveValues(GraphQLSkipDirective, node, variableValues);
-
   if (skip?.if === true) {
     return false;
   }
-
   const include = getDirectiveValues(
     GraphQLIncludeDirective,
     node,
     variableValues,
   );
-
   if (include?.if === false) {
     return false;
   }
-
   return true;
 }
 /**
  * Determines if a fragment is applicable to the given type.
  */
-
 function doesFragmentConditionMatch(
   schema: GraphQLSchema,
   fragment: FragmentDefinitionNode | InlineFragmentNode,
   type: GraphQLObjectType,
 ): boolean {
   const typeConditionNode = fragment.typeCondition;
-
   if (!typeConditionNode) {
     return true;
   }
-
   const conditionalType = typeFromAST(schema, typeConditionNode);
-
   if (conditionalType === type) {
     return true;
   }
-
   if (isAbstractType(conditionalType)) {
     return schema.isSubType(conditionalType, type);
   }
-
   return false;
 }
 /**
  * Implements the logic to compute the key of a given field's entry
  */
-
 function getFieldEntryKey(node: FieldNode): string {
   return node.alias ? node.alias.value : node.name.value;
 }
