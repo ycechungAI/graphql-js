@@ -1,13 +1,14 @@
-'use strict';
-
-Object.defineProperty(exports, '__esModule', {
-  value: true,
-});
-exports.isDigit = isDigit;
-exports.isLetter = isLetter;
-exports.isNameContinue = isNameContinue;
-exports.isNameStart = isNameStart;
-
+/**
+ * ```
+ * WhiteSpace ::
+ *   - "Horizontal Tab (U+0009)"
+ *   - "Space (U+0020)"
+ * ```
+ * @internal
+ */
+export function isWhiteSpace(code) {
+  return code === 0x0009 || code === 0x0020;
+}
 /**
  * ```
  * Digit :: one of
@@ -15,7 +16,7 @@ exports.isNameStart = isNameStart;
  * ```
  * @internal
  */
-function isDigit(code) {
+export function isDigit(code) {
   return code >= 0x0030 && code <= 0x0039;
 }
 /**
@@ -28,8 +29,7 @@ function isDigit(code) {
  * ```
  * @internal
  */
-
-function isLetter(code) {
+export function isLetter(code) {
   return (
     (code >= 0x0061 && code <= 0x007a) || // A-Z
     (code >= 0x0041 && code <= 0x005a) // a-z
@@ -43,8 +43,7 @@ function isLetter(code) {
  * ```
  * @internal
  */
-
-function isNameStart(code) {
+export function isNameStart(code) {
   return isLetter(code) || code === 0x005f;
 }
 /**
@@ -56,7 +55,6 @@ function isNameStart(code) {
  * ```
  * @internal
  */
-
-function isNameContinue(code) {
+export function isNameContinue(code) {
   return isLetter(code) || isDigit(code) || code === 0x005f;
 }
