@@ -1,5 +1,5 @@
-import type { ASTNode } from './ast';
-import { Kind } from './kinds';
+import type { ASTNode } from './ast.js';
+import { Kind } from './kinds.js';
 /**
  * A visitor is provided to visit, it contains the collection of
  * relevant functions to be called during the visitor's traversal.
@@ -11,8 +11,8 @@ declare type KindVisitor = {
     | EnterLeaveVisitor<NodeT>;
 };
 interface EnterLeaveVisitor<TVisitedNode extends ASTNode> {
-  readonly enter?: ASTVisitFn<TVisitedNode>;
-  readonly leave?: ASTVisitFn<TVisitedNode>;
+  readonly enter?: ASTVisitFn<TVisitedNode> | undefined;
+  readonly leave?: ASTVisitFn<TVisitedNode> | undefined;
 }
 /**
  * A visitor is comprised of visit functions, which are called on each node

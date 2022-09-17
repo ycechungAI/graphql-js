@@ -57,6 +57,8 @@ export {
   specifiedDirectives,
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
+  GraphQLDeferDirective,
+  GraphQLStreamDirective,
   GraphQLDeprecatedDirective,
   GraphQLSpecifiedByDirective,
   // "Enum" of Type Kinds
@@ -163,6 +165,7 @@ export {
   isDefinitionNode,
   isExecutableDefinitionNode,
   isSelectionNode,
+  isNullabilityAssertionNode,
   isValueNode,
   isConstValueNode,
   isTypeNode,
@@ -174,6 +177,7 @@ export {
 // Execute GraphQL queries.
 export {
   execute,
+  experimentalExecuteIncrementally,
   executeSync,
   defaultFieldResolver,
   defaultTypeResolver,
@@ -182,6 +186,7 @@ export {
   getVariableValues,
   getDirectiveValues,
   subscribe,
+  experimentalSubscribeIncrementally,
   createSourceEventStream,
 } from './execution/index.js';
 // Validate GraphQL documents.

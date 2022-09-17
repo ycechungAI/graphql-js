@@ -1,7 +1,7 @@
-import type { Maybe } from '../jsutils/Maybe';
-import type { ObjMap } from '../jsutils/ObjMap';
-import type { Path } from '../jsutils/Path';
-import type { PromiseOrValue } from '../jsutils/PromiseOrValue';
+import type { Maybe } from '../jsutils/Maybe.js';
+import type { ObjMap } from '../jsutils/ObjMap.js';
+import type { Path } from '../jsutils/Path.js';
+import type { PromiseOrValue } from '../jsutils/PromiseOrValue.js';
 import type {
   EnumTypeDefinitionNode,
   EnumTypeExtensionNode,
@@ -22,8 +22,8 @@ import type {
   UnionTypeDefinitionNode,
   UnionTypeExtensionNode,
   ValueNode,
-} from '../language/ast';
-import type { GraphQLSchema } from './schema';
+} from '../language/ast.js';
+import type { GraphQLSchema } from './schema.js';
 /**
  * These are all of the possible kinds of types.
  */
@@ -325,11 +325,11 @@ export interface GraphQLScalarTypeConfig<TInternal, TExternal> {
   description?: Maybe<string>;
   specifiedByURL?: Maybe<string>;
   /** Serializes an internal value to include in a response. */
-  serialize?: GraphQLScalarSerializer<TExternal>;
+  serialize?: GraphQLScalarSerializer<TExternal> | undefined;
   /** Parses an externally provided value to use as an input. */
-  parseValue?: GraphQLScalarValueParser<TInternal>;
+  parseValue?: GraphQLScalarValueParser<TInternal> | undefined;
   /** Parses an externally provided literal value to use as an input. */
-  parseLiteral?: GraphQLScalarLiteralParser<TInternal>;
+  parseLiteral?: GraphQLScalarLiteralParser<TInternal> | undefined;
   extensions?: Maybe<Readonly<GraphQLScalarTypeExtensions>>;
   astNode?: Maybe<ScalarTypeDefinitionNode>;
   extensionASTNodes?: Maybe<ReadonlyArray<ScalarTypeExtensionNode>>;
@@ -426,7 +426,7 @@ export declare function argsToArgsConfig(
 export interface GraphQLObjectTypeConfig<TSource, TContext> {
   name: string;
   description?: Maybe<string>;
-  interfaces?: ThunkReadonlyArray<GraphQLInterfaceType>;
+  interfaces?: ThunkReadonlyArray<GraphQLInterfaceType> | undefined;
   fields: ThunkObjMap<GraphQLFieldConfig<TSource, TContext>>;
   isTypeOf?: Maybe<GraphQLIsTypeOfFn<TSource, TContext>>;
   extensions?: Maybe<Readonly<GraphQLObjectTypeExtensions<TSource, TContext>>>;
@@ -494,9 +494,9 @@ export interface GraphQLFieldExtensions<_TSource, _TContext, _TArgs = any> {
 export interface GraphQLFieldConfig<TSource, TContext, TArgs = any> {
   description?: Maybe<string>;
   type: GraphQLOutputType;
-  args?: GraphQLFieldConfigArgumentMap;
-  resolve?: GraphQLFieldResolver<TSource, TContext, TArgs>;
-  subscribe?: GraphQLFieldResolver<TSource, TContext, TArgs>;
+  args?: GraphQLFieldConfigArgumentMap | undefined;
+  resolve?: GraphQLFieldResolver<TSource, TContext, TArgs> | undefined;
+  subscribe?: GraphQLFieldResolver<TSource, TContext, TArgs> | undefined;
   deprecationReason?: Maybe<string>;
   extensions?: Maybe<
     Readonly<GraphQLFieldExtensions<TSource, TContext, TArgs>>
@@ -533,8 +533,8 @@ export interface GraphQLField<TSource, TContext, TArgs = any> {
   description: Maybe<string>;
   type: GraphQLOutputType;
   args: ReadonlyArray<GraphQLArgument>;
-  resolve?: GraphQLFieldResolver<TSource, TContext, TArgs>;
-  subscribe?: GraphQLFieldResolver<TSource, TContext, TArgs>;
+  resolve?: GraphQLFieldResolver<TSource, TContext, TArgs> | undefined;
+  subscribe?: GraphQLFieldResolver<TSource, TContext, TArgs> | undefined;
   deprecationReason: Maybe<string>;
   extensions: Readonly<GraphQLFieldExtensions<TSource, TContext, TArgs>>;
   astNode: Maybe<FieldDefinitionNode>;
@@ -603,7 +603,7 @@ export declare class GraphQLInterfaceType {
 export interface GraphQLInterfaceTypeConfig<TSource, TContext> {
   name: string;
   description?: Maybe<string>;
-  interfaces?: ThunkReadonlyArray<GraphQLInterfaceType>;
+  interfaces?: ThunkReadonlyArray<GraphQLInterfaceType> | undefined;
   fields: ThunkObjMap<GraphQLFieldConfig<TSource, TContext>>;
   /**
    * Optionally provide a custom type resolver function. If one is not provided,

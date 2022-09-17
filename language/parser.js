@@ -70,10 +70,11 @@ export function parseType(source, options) {
  * @internal
  */
 export class Parser {
-  constructor(source, options) {
+  constructor(source, options = {}) {
     const sourceObj = isSource(source) ? source : new Source(source);
     this._lexer = new Lexer(sourceObj);
     this._options = options;
+    this._tokenCounter = 0;
   }
   /**
    * Converts a name lex token into a name parse node.
@@ -299,11 +300,44 @@ export class Parser {
       alias,
       name,
       arguments: this.parseArguments(false),
+      // Experimental support for Client Controlled Nullability changes
+      // the grammar of Field:
+      nullabilityAssertion: this.parseNullabilityAssertion(),
       directives: this.parseDirectives(false),
       selectionSet: this.peek(TokenKind.BRACE_L)
         ? this.parseSelectionSet()
         : undefined,
     });
+  }
+  // TODO: add grammar comment after it finalizes
+  parseNullabilityAssertion() {
+    // Note: Client Controlled Nullability is experimental and may be changed or
+    // removed in the future.
+    if (this._options.experimentalClientControlledNullability !== true) {
+      return undefined;
+    }
+    const start = this._lexer.token;
+    let nullabilityAssertion;
+    if (this.expectOptionalToken(TokenKind.BRACKET_L)) {
+      const innerModifier = this.parseNullabilityAssertion();
+      this.expectToken(TokenKind.BRACKET_R);
+      nullabilityAssertion = this.node(start, {
+        kind: Kind.LIST_NULLABILITY_OPERATOR,
+        nullabilityAssertion: innerModifier,
+      });
+    }
+    if (this.expectOptionalToken(TokenKind.BANG)) {
+      nullabilityAssertion = this.node(start, {
+        kind: Kind.NON_NULL_ASSERTION,
+        nullabilityAssertion,
+      });
+    } else if (this.expectOptionalToken(TokenKind.QUESTION_MARK)) {
+      nullabilityAssertion = this.node(start, {
+        kind: Kind.ERROR_BOUNDARY,
+        nullabilityAssertion,
+      });
+    }
+    return nullabilityAssertion;
   }
   parseArguments(isConst) {
     const item = isConst ? this.parseConstArgument : this.parseArgument;
@@ -360,7 +394,7 @@ export class Parser {
     // Legacy support for defining variables within fragments changes
     // the grammar of FragmentDefinition:
     //   - fragment FragmentName VariableDefinitions? on TypeCondition Directives? SelectionSet
-    if (this._options?.allowLegacyFragmentVariables === true) {
+    if (this._options.allowLegacyFragmentVariables === true) {
       return this.node(start, {
         kind: Kind.FRAGMENT_DEFINITION,
         name: this.parseFragmentName(),
@@ -395,13 +429,13 @@ export class Parser {
       case TokenKind.BRACE_L:
         return this.parseObject(isConst);
       case TokenKind.INT:
-        this._lexer.advance();
+        this.advanceLexer();
         return this.node(token, {
           kind: Kind.INT,
           value: token.value,
         });
       case TokenKind.FLOAT:
-        this._lexer.advance();
+        this.advanceLexer();
         return this.node(token, {
           kind: Kind.FLOAT,
           value: token.value,
@@ -410,7 +444,7 @@ export class Parser {
       case TokenKind.BLOCK_STRING:
         return this.parseStringLiteral();
       case TokenKind.NAME:
-        this._lexer.advance();
+        this.advanceLexer();
         switch (token.value) {
           case 'true':
             return this.node(token, {
@@ -454,7 +488,7 @@ export class Parser {
   }
   parseStringLiteral() {
     const token = this._lexer.token;
-    this._lexer.advance();
+    this.advanceLexer();
     return this.node(token, {
       kind: Kind.STRING,
       value: token.value,
@@ -1129,7 +1163,7 @@ export class Parser {
    * given parsed object.
    */
   node(startToken, node) {
-    if (this._options?.noLocation !== true) {
+    if (this._options.noLocation !== true) {
       node.loc = new Location(
         startToken,
         this._lexer.lastToken,
@@ -1151,7 +1185,7 @@ export class Parser {
   expectToken(kind) {
     const token = this._lexer.token;
     if (token.kind === kind) {
-      this._lexer.advance();
+      this.advanceLexer();
       return token;
     }
     throw syntaxError(
@@ -1167,7 +1201,7 @@ export class Parser {
   expectOptionalToken(kind) {
     const token = this._lexer.token;
     if (token.kind === kind) {
-      this._lexer.advance();
+      this.advanceLexer();
       return true;
     }
     return false;
@@ -1179,7 +1213,7 @@ export class Parser {
   expectKeyword(value) {
     const token = this._lexer.token;
     if (token.kind === TokenKind.NAME && token.value === value) {
-      this._lexer.advance();
+      this.advanceLexer();
     } else {
       throw syntaxError(
         this._lexer.source,
@@ -1195,7 +1229,7 @@ export class Parser {
   expectOptionalKeyword(value) {
     const token = this._lexer.token;
     if (token.kind === TokenKind.NAME && token.value === value) {
-      this._lexer.advance();
+      this.advanceLexer();
       return true;
     }
     return false;
@@ -1265,6 +1299,20 @@ export class Parser {
       nodes.push(parseFn.call(this));
     } while (this.expectOptionalToken(delimiterKind));
     return nodes;
+  }
+  advanceLexer() {
+    const { maxTokens } = this._options;
+    const token = this._lexer.advance();
+    if (maxTokens !== undefined && token.kind !== TokenKind.EOF) {
+      ++this._tokenCounter;
+      if (this._tokenCounter > maxTokens) {
+        throw syntaxError(
+          this._lexer.source,
+          token.start,
+          `Document contains more that ${maxTokens} tokens. Parsing aborted.`,
+        );
+      }
+    }
   }
 }
 /**
