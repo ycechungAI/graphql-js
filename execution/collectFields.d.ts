@@ -2,16 +2,18 @@ import type { ObjMap } from '../jsutils/ObjMap.js';
 import type {
   FieldNode,
   FragmentDefinitionNode,
-  SelectionSetNode,
+  OperationDefinitionNode,
 } from '../language/ast.js';
 import type { GraphQLObjectType } from '../type/definition.js';
 import type { GraphQLSchema } from '../type/schema.js';
+export type FieldGroup = ReadonlyArray<FieldNode>;
+export type GroupedFieldSet = Map<string, FieldGroup>;
 export interface PatchFields {
   label: string | undefined;
-  fields: Map<string, ReadonlyArray<FieldNode>>;
+  groupedFieldSet: GroupedFieldSet;
 }
 export interface FieldsAndPatches {
-  fields: Map<string, ReadonlyArray<FieldNode>>;
+  groupedFieldSet: GroupedFieldSet;
   patches: Array<PatchFields>;
 }
 /**
@@ -30,7 +32,7 @@ export declare function collectFields(
     [variable: string]: unknown;
   },
   runtimeType: GraphQLObjectType,
-  selectionSet: SelectionSetNode,
+  operation: OperationDefinitionNode,
 ): FieldsAndPatches;
 /**
  * Given an array of field nodes, collects all of the subfields of the passed
@@ -48,6 +50,7 @@ export declare function collectSubfields(
   variableValues: {
     [variable: string]: unknown;
   },
+  operation: OperationDefinitionNode,
   returnType: GraphQLObjectType,
-  fieldNodes: ReadonlyArray<FieldNode>,
+  fieldGroup: FieldGroup,
 ): FieldsAndPatches;

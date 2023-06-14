@@ -7,24 +7,25 @@ export {
   defaultFieldResolver,
   defaultTypeResolver,
   subscribe,
-  experimentalSubscribeIncrementally,
 } from './execute.js';
 export type {
   ExecutionArgs,
   ExecutionResult,
   ExperimentalIncrementalExecutionResults,
   InitialIncrementalExecutionResult,
+  FormattedExecutionResult,
+  FormattedInitialIncrementalExecutionResult,
+} from './execute.js';
+export type {
   SubsequentIncrementalExecutionResult,
   IncrementalDeferResult,
   IncrementalStreamResult,
   IncrementalResult,
-  FormattedExecutionResult,
-  FormattedInitialIncrementalExecutionResult,
   FormattedSubsequentIncrementalExecutionResult,
   FormattedIncrementalDeferResult,
   FormattedIncrementalStreamResult,
   FormattedIncrementalResult,
-} from './execute.js';
+} from './IncrementalPublisher.js';
 export {
   getArgumentValues,
   getVariableValues,
