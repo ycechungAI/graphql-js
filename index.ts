@@ -321,7 +321,6 @@ export {
   getVariableValues,
   getDirectiveValues,
   subscribe,
-  experimentalSubscribeIncrementally,
   createSourceEventStream,
 } from './execution/index.ts';
 export type {
@@ -417,6 +416,8 @@ export {
   printSchema,
   // Print a GraphQLType to GraphQL Schema language.
   printType,
+  // Print a GraphQLDirective to GraphQL Schema language.
+  printDirective,
   // Prints the built-in introspection schema in the Schema Language format.
   printIntrospectionSchema,
   // Create a GraphQLType from a GraphQL language AST.
