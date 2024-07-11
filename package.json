@@ -55,8 +55,8 @@
     "gitpublish:deno": "bash ./resources/gitpublish.sh deno denoDist"
   },
   "devDependencies": {
-    "@docusaurus/core": "2.4.0",
-    "@docusaurus/preset-classic": "2.4.0",
+    "@docusaurus/core": "3.4.0",
+    "@docusaurus/preset-classic": "3.4.0",
     "@mdx-js/react": "1.6.22",
     "@stryker-mutator/core": "6.4.2",
     "@stryker-mutator/mocha-runner": "6.4.2",
@@ -72,7 +72,7 @@
     "chai": "4.3.7",
     "clsx": "1.2.1",
     "cspell": "6.31.1",
-    "docusaurus-plugin-typedoc-api": "3.0.0",
+    "docusaurus-plugin-typedoc-api": "4.2.0",
     "eslint": "8.38.0",
     "eslint-plugin-import": "2.27.5",
     "eslint-plugin-n": "15.7.0",
