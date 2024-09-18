@@ -633,9 +633,10 @@ export class GraphQLObjectType<TSource = any, TContext = any> {
     this.extensions = toObjMap(config.extensions);
     this.astNode = config.astNode;
     this.extensionASTNodes = config.extensionASTNodes ?? [];
-    // prettier-ignore
-    // FIXME: blocked by https://github.com/prettier/prettier/issues/14625
-    this._fields = (defineFieldMap<TSource, TContext>).bind(undefined, config.fields);
+    this._fields = (defineFieldMap<TSource, TContext>).bind(
+      undefined,
+      config.fields,
+    );
     this._interfaces = defineInterfaces.bind(undefined, config.interfaces);
   }
   get [Symbol.toStringTag]() {
@@ -919,9 +920,10 @@ export class GraphQLInterfaceType<TSource = any, TContext = any> {
     this.extensions = toObjMap(config.extensions);
     this.astNode = config.astNode;
     this.extensionASTNodes = config.extensionASTNodes ?? [];
-    // prettier-ignore
-    // FIXME: blocked by https://github.com/prettier/prettier/issues/14625
-    this._fields = (defineFieldMap<TSource, TContext>).bind(undefined, config.fields);
+    this._fields = (defineFieldMap<TSource, TContext>).bind(
+      undefined,
+      config.fields,
+    );
     this._interfaces = defineInterfaces.bind(undefined, config.interfaces);
   }
   get [Symbol.toStringTag]() {
@@ -1097,6 +1099,16 @@ interface GraphQLUnionTypeNormalizedConfig
 export interface GraphQLEnumTypeExtensions {
   [attributeName: string]: unknown;
 }
+function enumValuesFromConfig(values: GraphQLEnumValueConfigMap) {
+  return Object.entries(values).map(([valueName, valueConfig]) => ({
+    name: assertEnumValueName(valueName),
+    description: valueConfig.description,
+    value: valueConfig.value !== undefined ? valueConfig.value : valueName,
+    deprecationReason: valueConfig.deprecationReason,
+    extensions: toObjMap(valueConfig.extensions),
+    astNode: valueConfig.astNode,
+  }));
+}
 /**
  * Enum Type Definition
  *
@@ -1126,40 +1138,45 @@ export class GraphQLEnumType /* <T> */ {
   extensions: Readonly<GraphQLEnumTypeExtensions>;
   astNode: Maybe<EnumTypeDefinitionNode>;
   extensionASTNodes: ReadonlyArray<EnumTypeExtensionNode>;
-  private _values: ReadonlyArray<GraphQLEnumValue /* <T> */>;
-  private _valueLookup: ReadonlyMap<any /* T */, GraphQLEnumValue>;
-  private _nameLookup: ObjMap<GraphQLEnumValue>;
+  private _values:
+    | ReadonlyArray<GraphQLEnumValue /* <T> */>
+    | (() => GraphQLEnumValueConfigMap);
+  private _valueLookup: ReadonlyMap<any /* T */, GraphQLEnumValue> | null;
+  private _nameLookup: ObjMap<GraphQLEnumValue> | null;
   constructor(config: Readonly<GraphQLEnumTypeConfig /* <T> */>) {
     this.name = assertName(config.name);
     this.description = config.description;
     this.extensions = toObjMap(config.extensions);
     this.astNode = config.astNode;
     this.extensionASTNodes = config.extensionASTNodes ?? [];
-    this._values = Object.entries(config.values).map(
-      ([valueName, valueConfig]) => ({
-        name: assertEnumValueName(valueName),
-        description: valueConfig.description,
-        value: valueConfig.value !== undefined ? valueConfig.value : valueName,
-        deprecationReason: valueConfig.deprecationReason,
-        extensions: toObjMap(valueConfig.extensions),
-        astNode: valueConfig.astNode,
-      }),
-    );
-    this._valueLookup = new Map(
-      this._values.map((enumValue) => [enumValue.value, enumValue]),
-    );
-    this._nameLookup = keyMap(this._values, (value) => value.name);
+    this._values =
+      typeof config.values === 'function'
+        ? config.values
+        : enumValuesFromConfig(config.values);
+    this._valueLookup = null;
+    this._nameLookup = null;
   }
   get [Symbol.toStringTag]() {
     return 'GraphQLEnumType';
   }
   getValues(): ReadonlyArray<GraphQLEnumValue /* <T> */> {
+    if (typeof this._values === 'function') {
+      this._values = enumValuesFromConfig(this._values());
+    }
     return this._values;
   }
   getValue(name: string): Maybe<GraphQLEnumValue> {
+    if (this._nameLookup === null) {
+      this._nameLookup = keyMap(this.getValues(), (value) => value.name);
+    }
     return this._nameLookup[name];
   }
   serialize(outputValue: unknown /* T */): Maybe<string> {
+    if (this._valueLookup === null) {
+      this._valueLookup = new Map(
+        this.getValues().map((enumValue) => [enumValue.value, enumValue]),
+      );
+    }
     const enumValue = this._valueLookup.get(outputValue);
     if (enumValue === undefined) {
       throw new GraphQLError(
@@ -1248,12 +1265,13 @@ function didYouMeanEnumValue(
 export interface GraphQLEnumTypeConfig {
   name: string;
   description?: Maybe<string>;
-  values: GraphQLEnumValueConfigMap /* <T> */;
+  values: ThunkObjMap<GraphQLEnumValueConfig /* <T> */>;
   extensions?: Maybe<Readonly<GraphQLEnumTypeExtensions>>;
   astNode?: Maybe<EnumTypeDefinitionNode>;
   extensionASTNodes?: Maybe<ReadonlyArray<EnumTypeExtensionNode>>;
 }
 interface GraphQLEnumTypeNormalizedConfig extends GraphQLEnumTypeConfig {
+  values: ObjMap<GraphQLEnumValueConfig /* <T> */>;
   extensions: Readonly<GraphQLEnumTypeExtensions>;
   extensionASTNodes: ReadonlyArray<EnumTypeExtensionNode>;
 }
@@ -1325,6 +1343,7 @@ export class GraphQLInputObjectType {
   extensions: Readonly<GraphQLInputObjectTypeExtensions>;
   astNode: Maybe<InputObjectTypeDefinitionNode>;
   extensionASTNodes: ReadonlyArray<InputObjectTypeExtensionNode>;
+  isOneOf: boolean;
   private _fields: ThunkObjMap<GraphQLInputField>;
   constructor(config: Readonly<GraphQLInputObjectTypeConfig>) {
     this.name = assertName(config.name);
@@ -1332,6 +1351,7 @@ export class GraphQLInputObjectType {
     this.extensions = toObjMap(config.extensions);
     this.astNode = config.astNode;
     this.extensionASTNodes = config.extensionASTNodes ?? [];
+    this.isOneOf = config.isOneOf ?? false;
     this._fields = defineInputFieldMap.bind(undefined, config.fields);
   }
   get [Symbol.toStringTag]() {
@@ -1359,6 +1379,7 @@ export class GraphQLInputObjectType {
       extensions: this.extensions,
       astNode: this.astNode,
       extensionASTNodes: this.extensionASTNodes,
+      isOneOf: this.isOneOf,
     };
   }
   toString(): string {
@@ -1389,6 +1410,7 @@ export interface GraphQLInputObjectTypeConfig {
   extensions?: Maybe<Readonly<GraphQLInputObjectTypeExtensions>>;
   astNode?: Maybe<InputObjectTypeDefinitionNode>;
   extensionASTNodes?: Maybe<ReadonlyArray<InputObjectTypeExtensionNode>>;
+  isOneOf?: boolean;
 }
 interface GraphQLInputObjectTypeNormalizedConfig
   extends GraphQLInputObjectTypeConfig {

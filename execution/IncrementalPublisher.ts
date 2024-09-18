@@ -1,299 +1,340 @@
+import { invariant } from '../jsutils/invariant.ts';
 import type { ObjMap } from '../jsutils/ObjMap.ts';
-import type { Path } from '../jsutils/Path.ts';
 import { pathToArray } from '../jsutils/Path.ts';
-import type { PromiseOrValue } from '../jsutils/PromiseOrValue.ts';
-import { promiseWithResolvers } from '../jsutils/promiseWithResolvers.ts';
+import type { GraphQLError } from '../error/GraphQLError.ts';
+import { IncrementalGraph } from './IncrementalGraph.ts';
 import type {
-  GraphQLError,
-  GraphQLFormattedError,
-} from '../error/GraphQLError.ts';
-export interface SubsequentIncrementalExecutionResult<
-  TData = ObjMap<unknown>,
-  TExtensions = ObjMap<unknown>,
-> {
-  hasNext: boolean;
-  incremental?: ReadonlyArray<IncrementalResult<TData, TExtensions>>;
-  extensions?: TExtensions;
+  CancellableStreamRecord,
+  CompletedExecutionGroup,
+  CompletedResult,
+  DeferredFragmentRecord,
+  DeliveryGroup,
+  ExperimentalIncrementalExecutionResults,
+  IncrementalDataRecord,
+  IncrementalDataRecordResult,
+  IncrementalDeferResult,
+  IncrementalResult,
+  IncrementalStreamResult,
+  InitialIncrementalExecutionResult,
+  PendingResult,
+  StreamItemsResult,
+  SubsequentIncrementalExecutionResult,
+} from './types.ts';
+import {
+  isCancellableStreamRecord,
+  isCompletedExecutionGroup,
+  isFailedExecutionGroup,
+} from './types.ts';
+export function buildIncrementalResponse(
+  context: IncrementalPublisherContext,
+  result: ObjMap<unknown>,
+  errors: ReadonlyArray<GraphQLError> | undefined,
+  incrementalDataRecords: ReadonlyArray<IncrementalDataRecord>,
+): ExperimentalIncrementalExecutionResults {
+  const incrementalPublisher = new IncrementalPublisher(context);
+  return incrementalPublisher.buildResponse(
+    result,
+    errors,
+    incrementalDataRecords,
+  );
 }
-export interface FormattedSubsequentIncrementalExecutionResult<
-  TData = ObjMap<unknown>,
-  TExtensions = ObjMap<unknown>,
-> {
-  hasNext: boolean;
-  incremental?: ReadonlyArray<FormattedIncrementalResult<TData, TExtensions>>;
-  extensions?: TExtensions;
+interface IncrementalPublisherContext {
+  cancellableStreams: Set<CancellableStreamRecord> | undefined;
 }
-export interface IncrementalDeferResult<
-  TData = ObjMap<unknown>,
-  TExtensions = ObjMap<unknown>,
-> {
-  errors?: ReadonlyArray<GraphQLError>;
-  data?: TData | null;
-  path?: ReadonlyArray<string | number>;
-  label?: string;
-  extensions?: TExtensions;
+interface SubsequentIncrementalExecutionResultContext {
+  pending: Array<PendingResult>;
+  incremental: Array<IncrementalResult>;
+  completed: Array<CompletedResult>;
 }
-export interface FormattedIncrementalDeferResult<
-  TData = ObjMap<unknown>,
-  TExtensions = ObjMap<unknown>,
-> {
-  errors?: ReadonlyArray<GraphQLFormattedError>;
-  data?: TData | null;
-  path?: ReadonlyArray<string | number>;
-  label?: string;
-  extensions?: TExtensions;
-}
-export interface IncrementalStreamResult<
-  TData = Array<unknown>,
-  TExtensions = ObjMap<unknown>,
-> {
-  errors?: ReadonlyArray<GraphQLError>;
-  items?: TData | null;
-  path?: ReadonlyArray<string | number>;
-  label?: string;
-  extensions?: TExtensions;
-}
-export interface FormattedIncrementalStreamResult<
-  TData = Array<unknown>,
-  TExtensions = ObjMap<unknown>,
-> {
-  errors?: ReadonlyArray<GraphQLFormattedError>;
-  items?: TData | null;
-  path?: ReadonlyArray<string | number>;
-  label?: string;
-  extensions?: TExtensions;
-}
-export type IncrementalResult<
-  TData = ObjMap<unknown>,
-  TExtensions = ObjMap<unknown>,
-> =
-  | IncrementalDeferResult<TData, TExtensions>
-  | IncrementalStreamResult<TData, TExtensions>;
-export type FormattedIncrementalResult<
-  TData = ObjMap<unknown>,
-  TExtensions = ObjMap<unknown>,
-> =
-  | FormattedIncrementalDeferResult<TData, TExtensions>
-  | FormattedIncrementalStreamResult<TData, TExtensions>;
-export function yieldSubsequentPayloads(
-  subsequentPayloads: Set<IncrementalDataRecord>,
-): AsyncGenerator<SubsequentIncrementalExecutionResult, void, void> {
-  let isDone = false;
-  async function next(): Promise<
-    IteratorResult<SubsequentIncrementalExecutionResult, void>
-  > {
-    if (isDone) {
-      return { value: undefined, done: true };
-    }
-    await Promise.race(Array.from(subsequentPayloads).map((p) => p.promise));
-    if (isDone) {
-      // a different call to next has exhausted all payloads
-      return { value: undefined, done: true };
-    }
-    const incremental = getCompletedIncrementalResults(subsequentPayloads);
-    const hasNext = subsequentPayloads.size > 0;
-    if (!incremental.length && hasNext) {
-      return next();
-    }
-    if (!hasNext) {
-      isDone = true;
-    }
+/**
+ * This class is used to publish incremental results to the client, enabling semi-concurrent
+ * execution while preserving result order.
+ *
+ * @internal
+ */
+class IncrementalPublisher {
+  private _context: IncrementalPublisherContext;
+  private _nextId: number;
+  private _incrementalGraph: IncrementalGraph;
+  constructor(context: IncrementalPublisherContext) {
+    this._context = context;
+    this._nextId = 0;
+    this._incrementalGraph = new IncrementalGraph();
+  }
+  buildResponse(
+    data: ObjMap<unknown>,
+    errors: ReadonlyArray<GraphQLError> | undefined,
+    incrementalDataRecords: ReadonlyArray<IncrementalDataRecord>,
+  ): ExperimentalIncrementalExecutionResults {
+    const newRootNodes = this._incrementalGraph.getNewRootNodes(
+      incrementalDataRecords,
+    );
+    const pending = this._toPendingResults(newRootNodes);
+    const initialResult: InitialIncrementalExecutionResult =
+      errors === undefined
+        ? { data, pending, hasNext: true }
+        : { errors, data, pending, hasNext: true };
     return {
-      value: incremental.length ? { incremental, hasNext } : { hasNext },
-      done: false,
+      initialResult,
+      subsequentResults: this._subscribe(),
     };
   }
-  function returnStreamIterators() {
-    const promises: Array<Promise<IteratorResult<unknown>>> = [];
-    subsequentPayloads.forEach((incrementalDataRecord) => {
-      if (
-        isStreamItemsRecord(incrementalDataRecord) &&
-        incrementalDataRecord.asyncIterator?.return
-      ) {
-        promises.push(incrementalDataRecord.asyncIterator.return());
+  private _toPendingResults(
+    newRootNodes: ReadonlyArray<DeliveryGroup>,
+  ): Array<PendingResult> {
+    const pendingResults: Array<PendingResult> = [];
+    for (const node of newRootNodes) {
+      const id = String(this._getNextId());
+      node.id = id;
+      const pendingResult: PendingResult = {
+        id,
+        path: pathToArray(node.path),
+      };
+      if (node.label !== undefined) {
+        pendingResult.label = node.label;
       }
-    });
-    return Promise.all(promises);
-  }
-  return {
-    [Symbol.asyncIterator]() {
-      return this;
-    },
-    next,
-    async return(): Promise<
-      IteratorResult<SubsequentIncrementalExecutionResult, void>
-    > {
-      await returnStreamIterators();
-      isDone = true;
-      return { value: undefined, done: true };
-    },
-    async throw(
-      error?: unknown,
-    ): Promise<IteratorResult<SubsequentIncrementalExecutionResult, void>> {
-      await returnStreamIterators();
-      isDone = true;
-      return Promise.reject(error);
-    },
-  };
-}
-function getCompletedIncrementalResults(
-  subsequentPayloads: Set<IncrementalDataRecord>,
-): Array<IncrementalResult> {
-  const incrementalResults: Array<IncrementalResult> = [];
-  for (const incrementalDataRecord of subsequentPayloads) {
-    const incrementalResult: IncrementalResult = {};
-    if (!incrementalDataRecord.isCompleted) {
-      continue;
+      pendingResults.push(pendingResult);
     }
-    subsequentPayloads.delete(incrementalDataRecord);
-    if (isStreamItemsRecord(incrementalDataRecord)) {
-      const items = incrementalDataRecord.items;
-      if (incrementalDataRecord.isCompletedAsyncIterator) {
-        // async iterable resolver just finished but there may be pending payloads
+    return pendingResults;
+  }
+  private _getNextId(): string {
+    return String(this._nextId++);
+  }
+  private _subscribe(): AsyncGenerator<
+    SubsequentIncrementalExecutionResult,
+    void,
+    void
+  > {
+    let isDone = false;
+    const _next = async (): Promise<
+      IteratorResult<SubsequentIncrementalExecutionResult, void>
+    > => {
+      if (isDone) {
+        await this._returnAsyncIteratorsIgnoringErrors();
+        return { value: undefined, done: true };
+      }
+      const context: SubsequentIncrementalExecutionResultContext = {
+        pending: [],
+        incremental: [],
+        completed: [],
+      };
+      let batch: Iterable<IncrementalDataRecordResult> | undefined =
+        this._incrementalGraph.currentCompletedBatch();
+      do {
+        for (const completedResult of batch) {
+          this._handleCompletedIncrementalData(completedResult, context);
+        }
+        const { incremental, completed } = context;
+        if (incremental.length > 0 || completed.length > 0) {
+          const hasNext = this._incrementalGraph.hasNext();
+          if (!hasNext) {
+            isDone = true;
+          }
+          const subsequentIncrementalExecutionResult: SubsequentIncrementalExecutionResult =
+            { hasNext };
+          const pending = context.pending;
+          if (pending.length > 0) {
+            subsequentIncrementalExecutionResult.pending = pending;
+          }
+          if (incremental.length > 0) {
+            subsequentIncrementalExecutionResult.incremental = incremental;
+          }
+          if (completed.length > 0) {
+            subsequentIncrementalExecutionResult.completed = completed;
+          }
+          return { value: subsequentIncrementalExecutionResult, done: false };
+        }
+        // eslint-disable-next-line no-await-in-loop
+        batch = await this._incrementalGraph.nextCompletedBatch();
+      } while (batch !== undefined);
+      await this._returnAsyncIteratorsIgnoringErrors();
+      return { value: undefined, done: true };
+    };
+    const _return = async (): Promise<
+      IteratorResult<SubsequentIncrementalExecutionResult, void>
+    > => {
+      isDone = true;
+      this._incrementalGraph.abort();
+      await this._returnAsyncIterators();
+      return { value: undefined, done: true };
+    };
+    const _throw = async (
+      error?: unknown,
+    ): Promise<IteratorResult<SubsequentIncrementalExecutionResult, void>> => {
+      isDone = true;
+      this._incrementalGraph.abort();
+      await this._returnAsyncIterators();
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      return Promise.reject(error);
+    };
+    return {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      next: _next,
+      return: _return,
+      throw: _throw,
+    };
+  }
+  private _handleCompletedIncrementalData(
+    completedIncrementalData: IncrementalDataRecordResult,
+    context: SubsequentIncrementalExecutionResultContext,
+  ): void {
+    if (isCompletedExecutionGroup(completedIncrementalData)) {
+      this._handleCompletedExecutionGroup(completedIncrementalData, context);
+    } else {
+      this._handleCompletedStreamItems(completedIncrementalData, context);
+    }
+  }
+  private _handleCompletedExecutionGroup(
+    completedExecutionGroup: CompletedExecutionGroup,
+    context: SubsequentIncrementalExecutionResultContext,
+  ): void {
+    if (isFailedExecutionGroup(completedExecutionGroup)) {
+      for (const deferredFragmentRecord of completedExecutionGroup
+        .pendingExecutionGroup.deferredFragmentRecords) {
+        const id = deferredFragmentRecord.id;
+        if (
+          !this._incrementalGraph.removeDeferredFragment(deferredFragmentRecord)
+        ) {
+          // This can occur if multiple deferred grouped field sets error for a fragment.
+          continue;
+        }
+        id !== undefined || invariant(false);
+        context.completed.push({
+          id,
+          errors: completedExecutionGroup.errors,
+        });
+      }
+      return;
+    }
+    this._incrementalGraph.addCompletedSuccessfulExecutionGroup(
+      completedExecutionGroup,
+    );
+    for (const deferredFragmentRecord of completedExecutionGroup
+      .pendingExecutionGroup.deferredFragmentRecords) {
+      const completion = this._incrementalGraph.completeDeferredFragment(
+        deferredFragmentRecord,
+      );
+      if (completion === undefined) {
         continue;
       }
-      (incrementalResult as IncrementalStreamResult).items = items;
-    } else {
-      const data = incrementalDataRecord.data;
-      (incrementalResult as IncrementalDeferResult).data = data ?? null;
+      const id = deferredFragmentRecord.id;
+      id !== undefined || invariant(false);
+      const incremental = context.incremental;
+      const { newRootNodes, successfulExecutionGroups } = completion;
+      context.pending.push(...this._toPendingResults(newRootNodes));
+      for (const successfulExecutionGroup of successfulExecutionGroups) {
+        const { bestId, subPath } = this._getBestIdAndSubPath(
+          id,
+          deferredFragmentRecord,
+          successfulExecutionGroup,
+        );
+        const incrementalEntry: IncrementalDeferResult = {
+          ...successfulExecutionGroup.result,
+          id: bestId,
+        };
+        if (subPath !== undefined) {
+          incrementalEntry.subPath = subPath;
+        }
+        incremental.push(incrementalEntry);
+      }
+      context.completed.push({ id });
     }
-    incrementalResult.path = incrementalDataRecord.path;
-    if (incrementalDataRecord.label != null) {
-      incrementalResult.label = incrementalDataRecord.label;
-    }
-    if (incrementalDataRecord.errors.length > 0) {
-      incrementalResult.errors = incrementalDataRecord.errors;
-    }
-    incrementalResults.push(incrementalResult);
   }
-  return incrementalResults;
-}
-export function filterSubsequentPayloads(
-  subsequentPayloads: Set<IncrementalDataRecord>,
-  nullPath: Path,
-  currentIncrementalDataRecord: IncrementalDataRecord | undefined,
-): void {
-  const nullPathArray = pathToArray(nullPath);
-  subsequentPayloads.forEach((incrementalDataRecord) => {
-    if (incrementalDataRecord === currentIncrementalDataRecord) {
-      // don't remove payload from where error originates
-      return;
-    }
-    for (let i = 0; i < nullPathArray.length; i++) {
-      if (incrementalDataRecord.path[i] !== nullPathArray[i]) {
-        // incrementalDataRecord points to a path unaffected by this payload
-        return;
+  private _handleCompletedStreamItems(
+    streamItemsResult: StreamItemsResult,
+    context: SubsequentIncrementalExecutionResultContext,
+  ): void {
+    const streamRecord = streamItemsResult.streamRecord;
+    const id = streamRecord.id;
+    id !== undefined || invariant(false);
+    if (streamItemsResult.errors !== undefined) {
+      context.completed.push({
+        id,
+        errors: streamItemsResult.errors,
+      });
+      this._incrementalGraph.removeStream(streamRecord);
+      if (isCancellableStreamRecord(streamRecord)) {
+        this._context.cancellableStreams !== undefined || invariant(false);
+        this._context.cancellableStreams.delete(streamRecord);
+        streamRecord.earlyReturn().catch(() => {
+          /* c8 ignore next 1 */
+          // ignore error
+        });
+      }
+    } else if (streamItemsResult.result === undefined) {
+      context.completed.push({ id });
+      this._incrementalGraph.removeStream(streamRecord);
+      if (isCancellableStreamRecord(streamRecord)) {
+        this._context.cancellableStreams !== undefined || invariant(false);
+        this._context.cancellableStreams.delete(streamRecord);
+      }
+    } else {
+      const incrementalEntry: IncrementalStreamResult = {
+        id,
+        ...streamItemsResult.result,
+      };
+      context.incremental.push(incrementalEntry);
+      const incrementalDataRecords = streamItemsResult.incrementalDataRecords;
+      if (incrementalDataRecords !== undefined) {
+        const newRootNodes = this._incrementalGraph.getNewRootNodes(
+          incrementalDataRecords,
+        );
+        context.pending.push(...this._toPendingResults(newRootNodes));
       }
     }
-    // incrementalDataRecord path points to nulled error field
-    if (
-      isStreamItemsRecord(incrementalDataRecord) &&
-      incrementalDataRecord.asyncIterator?.return
-    ) {
-      incrementalDataRecord.asyncIterator.return().catch(() => {
-        // ignore error
-      });
-    }
-    subsequentPayloads.delete(incrementalDataRecord);
-  });
-}
-/** @internal */
-export class DeferredFragmentRecord {
-  type: 'defer';
-  errors: Array<GraphQLError>;
-  label: string | undefined;
-  path: Array<string | number>;
-  promise: Promise<void>;
-  data: ObjMap<unknown> | null;
-  parentContext: IncrementalDataRecord | undefined;
-  isCompleted: boolean;
-  _subsequentPayloads: Set<IncrementalDataRecord>;
-  _resolve?: (arg: PromiseOrValue<ObjMap<unknown> | null>) => void;
-  constructor(opts: {
-    label: string | undefined;
-    path: Path | undefined;
-    parentContext: IncrementalDataRecord | undefined;
-    subsequentPayloads: Set<IncrementalDataRecord>;
-  }) {
-    this.type = 'defer';
-    this.label = opts.label;
-    this.path = pathToArray(opts.path);
-    this.parentContext = opts.parentContext;
-    this.errors = [];
-    this._subsequentPayloads = opts.subsequentPayloads;
-    this._subsequentPayloads.add(this);
-    this.isCompleted = false;
-    this.data = null;
-    const { promise, resolve } = promiseWithResolvers<ObjMap<unknown> | null>();
-    this._resolve = resolve;
-    this.promise = promise.then((data) => {
-      this.data = data;
-      this.isCompleted = true;
-    });
   }
-  addData(data: PromiseOrValue<ObjMap<unknown> | null>) {
-    const parentData = this.parentContext?.promise;
-    if (parentData) {
-      this._resolve?.(parentData.then(() => data));
+  private _getBestIdAndSubPath(
+    initialId: string,
+    initialDeferredFragmentRecord: DeferredFragmentRecord,
+    completedExecutionGroup: CompletedExecutionGroup,
+  ): {
+    bestId: string;
+    subPath: ReadonlyArray<string | number> | undefined;
+  } {
+    let maxLength = pathToArray(initialDeferredFragmentRecord.path).length;
+    let bestId = initialId;
+    for (const deferredFragmentRecord of completedExecutionGroup
+      .pendingExecutionGroup.deferredFragmentRecords) {
+      if (deferredFragmentRecord === initialDeferredFragmentRecord) {
+        continue;
+      }
+      const id = deferredFragmentRecord.id;
+      // TODO: add test case for when an fragment has not been released, but might be processed for the shortest path.
+      /* c8 ignore next 3 */
+      if (id === undefined) {
+        continue;
+      }
+      const fragmentPath = pathToArray(deferredFragmentRecord.path);
+      const length = fragmentPath.length;
+      if (length > maxLength) {
+        maxLength = length;
+        bestId = id;
+      }
+    }
+    const subPath = completedExecutionGroup.path.slice(maxLength);
+    return {
+      bestId,
+      subPath: subPath.length > 0 ? subPath : undefined,
+    };
+  }
+  private async _returnAsyncIterators(): Promise<void> {
+    const cancellableStreams = this._context.cancellableStreams;
+    if (cancellableStreams === undefined) {
       return;
     }
-    this._resolve?.(data);
+    const promises: Array<Promise<unknown>> = [];
+    for (const streamRecord of cancellableStreams) {
+      if (streamRecord.earlyReturn !== undefined) {
+        promises.push(streamRecord.earlyReturn());
+      }
+    }
+    await Promise.all(promises);
   }
-}
-/** @internal */
-export class StreamItemsRecord {
-  type: 'stream';
-  errors: Array<GraphQLError>;
-  label: string | undefined;
-  path: Array<string | number>;
-  items: Array<unknown> | null;
-  promise: Promise<void>;
-  parentContext: IncrementalDataRecord | undefined;
-  asyncIterator: AsyncIterator<unknown> | undefined;
-  isCompletedAsyncIterator?: boolean;
-  isCompleted: boolean;
-  _subsequentPayloads: Set<IncrementalDataRecord>;
-  _resolve?: (arg: PromiseOrValue<Array<unknown> | null>) => void;
-  constructor(opts: {
-    label: string | undefined;
-    path: Path | undefined;
-    asyncIterator?: AsyncIterator<unknown>;
-    parentContext: IncrementalDataRecord | undefined;
-    subsequentPayloads: Set<IncrementalDataRecord>;
-  }) {
-    this.type = 'stream';
-    this.items = null;
-    this.label = opts.label;
-    this.path = pathToArray(opts.path);
-    this.parentContext = opts.parentContext;
-    this.asyncIterator = opts.asyncIterator;
-    this.errors = [];
-    this._subsequentPayloads = opts.subsequentPayloads;
-    this._subsequentPayloads.add(this);
-    this.isCompleted = false;
-    this.items = null;
-    const { promise, resolve } = promiseWithResolvers<Array<unknown> | null>();
-    this._resolve = resolve;
-    this.promise = promise.then((items) => {
-      this.items = items;
-      this.isCompleted = true;
+  private async _returnAsyncIteratorsIgnoringErrors(): Promise<void> {
+    await this._returnAsyncIterators().catch(() => {
+      // Ignore errors
     });
   }
-  addItems(items: PromiseOrValue<Array<unknown> | null>) {
-    const parentData = this.parentContext?.promise;
-    if (parentData) {
-      this._resolve?.(parentData.then(() => items));
-      return;
-    }
-    this._resolve?.(items);
-  }
-  setIsCompletedAsyncIterator() {
-    this.isCompletedAsyncIterator = true;
-  }
-}
-export type IncrementalDataRecord = DeferredFragmentRecord | StreamItemsRecord;
-function isStreamItemsRecord(
-  incrementalDataRecord: IncrementalDataRecord,
-): incrementalDataRecord is StreamItemsRecord {
-  return incrementalDataRecord.type === 'stream';
 }

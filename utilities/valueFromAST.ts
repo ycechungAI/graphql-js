@@ -30,6 +30,7 @@ import {
  * | Enum Value           | Unknown       |
  * | NullValue            | null          |
  *
+ * @deprecated use `coerceInputLiteral()` instead - will be removed in v18
  */
 export function valueFromAST(
   valueNode: Maybe<ValueNode>,
@@ -43,11 +44,11 @@ export function valueFromAST(
   }
   if (valueNode.kind === Kind.VARIABLE) {
     const variableName = valueNode.name.value;
-    if (variables == null || variables[variableName] === undefined) {
+    const variableValue = variables?.[variableName];
+    if (variableValue === undefined) {
       // No valid return value.
       return;
     }
-    const variableValue = variables[variableName];
     if (variableValue === null && isNonNullType(type)) {
       return; // Invalid: intentionally return no value.
     }
@@ -117,6 +118,15 @@ export function valueFromAST(
         return; // Invalid: intentionally return no value.
       }
       coercedObj[field.name] = fieldValue;
+    }
+    if (type.isOneOf) {
+      const keys = Object.keys(coercedObj);
+      if (keys.length !== 1) {
+        return; // Invalid: not exactly one key, intentionally return no value.
+      }
+      if (coercedObj[keys[0]] === null) {
+        return; // Invalid: value not non-null, intentionally return no value.
+      }
     }
     return coercedObj;
   }

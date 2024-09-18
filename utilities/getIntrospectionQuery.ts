@@ -1,5 +1,6 @@
 import type { Maybe } from '../jsutils/Maybe.ts';
 import type { DirectiveLocation } from '../language/directiveLocation.ts';
+import type { TypeKind } from '../type/introspection.ts';
 export interface IntrospectionOptions {
   /**
    * Whether to include descriptions in the introspection result.
@@ -26,6 +27,11 @@ export interface IntrospectionOptions {
    * Default: false
    */
   inputValueDeprecation?: boolean;
+  /**
+   * Whether target GraphQL server supports `@oneOf` input objects.
+   * Default: false
+   */
+  oneOf?: boolean;
 }
 /**
  * Produce the GraphQL query recommended for a full schema introspection.
@@ -38,6 +44,7 @@ export function getIntrospectionQuery(options?: IntrospectionOptions): string {
     directiveIsRepeatable: false,
     schemaDescription: false,
     inputValueDeprecation: false,
+    oneOf: false,
     ...options,
   };
   const descriptions = optionsWithDefault.descriptions ? 'description' : '';
@@ -53,6 +60,7 @@ export function getIntrospectionQuery(options?: IntrospectionOptions): string {
   function inputDeprecation(str: string) {
     return optionsWithDefault.inputValueDeprecation ? str : '';
   }
+  const oneOf = optionsWithDefault.oneOf ? 'isOneOf' : '';
   return `
     query IntrospectionQuery {
       __schema {
@@ -80,6 +88,7 @@ export function getIntrospectionQuery(options?: IntrospectionOptions): string {
       name
       ${descriptions}
       ${specifiedByUrl}
+      ${oneOf}
       fields(includeDeprecated: true) {
         name
         ${descriptions}
@@ -142,6 +151,14 @@ export function getIntrospectionQuery(options?: IntrospectionOptions): string {
                   ofType {
                     kind
                     name
+                    ofType {
+                      kind
+                      name
+                      ofType {
+                        kind
+                        name
+                      }
+                    }
                   }
                 }
               }
@@ -185,13 +202,13 @@ export type IntrospectionInputType =
   | IntrospectionEnumType
   | IntrospectionInputObjectType;
 export interface IntrospectionScalarType {
-  readonly kind: 'SCALAR';
+  readonly kind: TypeKind.SCALAR;
   readonly name: string;
   readonly description?: Maybe<string>;
   readonly specifiedByURL?: Maybe<string>;
 }
 export interface IntrospectionObjectType {
-  readonly kind: 'OBJECT';
+  readonly kind: TypeKind.OBJECT;
   readonly name: string;
   readonly description?: Maybe<string>;
   readonly fields: ReadonlyArray<IntrospectionField>;
@@ -200,7 +217,7 @@ export interface IntrospectionObjectType {
   >;
 }
 export interface IntrospectionInterfaceType {
-  readonly kind: 'INTERFACE';
+  readonly kind: TypeKind.INTERFACE;
   readonly name: string;
   readonly description?: Maybe<string>;
   readonly fields: ReadonlyArray<IntrospectionField>;
@@ -212,7 +229,7 @@ export interface IntrospectionInterfaceType {
   >;
 }
 export interface IntrospectionUnionType {
-  readonly kind: 'UNION';
+  readonly kind: TypeKind.UNION;
   readonly name: string;
   readonly description?: Maybe<string>;
   readonly possibleTypes: ReadonlyArray<
@@ -220,27 +237,28 @@ export interface IntrospectionUnionType {
   >;
 }
 export interface IntrospectionEnumType {
-  readonly kind: 'ENUM';
+  readonly kind: TypeKind.ENUM;
   readonly name: string;
   readonly description?: Maybe<string>;
   readonly enumValues: ReadonlyArray<IntrospectionEnumValue>;
 }
 export interface IntrospectionInputObjectType {
-  readonly kind: 'INPUT_OBJECT';
+  readonly kind: TypeKind.INPUT_OBJECT;
   readonly name: string;
   readonly description?: Maybe<string>;
   readonly inputFields: ReadonlyArray<IntrospectionInputValue>;
+  readonly isOneOf: boolean;
 }
 export interface IntrospectionListTypeRef<
   T extends IntrospectionTypeRef = IntrospectionTypeRef,
 > {
-  readonly kind: 'LIST';
+  readonly kind: TypeKind.LIST;
   readonly ofType: T;
 }
 export interface IntrospectionNonNullTypeRef<
   T extends IntrospectionTypeRef = IntrospectionTypeRef,
 > {
-  readonly kind: 'NON_NULL';
+  readonly kind: TypeKind.NON_NULL;
   readonly ofType: T;
 }
 export type IntrospectionTypeRef =

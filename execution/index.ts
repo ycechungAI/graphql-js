@@ -8,24 +8,22 @@ export {
   defaultTypeResolver,
   subscribe,
 } from './execute.ts';
+export type { ExecutionArgs } from './execute.ts';
 export type {
-  ExecutionArgs,
   ExecutionResult,
   ExperimentalIncrementalExecutionResults,
   InitialIncrementalExecutionResult,
-  FormattedExecutionResult,
-  FormattedInitialIncrementalExecutionResult,
-} from './execute.ts';
-export type {
   SubsequentIncrementalExecutionResult,
   IncrementalDeferResult,
   IncrementalStreamResult,
   IncrementalResult,
+  FormattedExecutionResult,
+  FormattedInitialIncrementalExecutionResult,
   FormattedSubsequentIncrementalExecutionResult,
   FormattedIncrementalDeferResult,
   FormattedIncrementalStreamResult,
   FormattedIncrementalResult,
-} from './IncrementalPublisher.ts';
+} from './types.ts';
 export {
   getArgumentValues,
   getVariableValues,

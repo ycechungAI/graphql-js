@@ -3,18 +3,25 @@ import { inspect } from '../jsutils/inspect.ts';
 import { invariant } from '../jsutils/invariant.ts';
 import { isIterableObject } from '../jsutils/isIterableObject.ts';
 import { isObjectLike } from '../jsutils/isObjectLike.ts';
+import type { Maybe } from '../jsutils/Maybe.ts';
+import type { ObjMap } from '../jsutils/ObjMap.ts';
 import type { Path } from '../jsutils/Path.ts';
 import { addPath, pathToArray } from '../jsutils/Path.ts';
 import { printPathArray } from '../jsutils/printPathArray.ts';
 import { suggestionList } from '../jsutils/suggestionList.ts';
 import { GraphQLError } from '../error/GraphQLError.ts';
+import type { ValueNode, VariableNode } from '../language/ast.ts';
+import { Kind } from '../language/kinds.ts';
 import type { GraphQLInputType } from '../type/definition.ts';
 import {
+  assertLeafType,
   isInputObjectType,
   isLeafType,
   isListType,
   isNonNullType,
+  isRequiredInputField,
 } from '../type/definition.ts';
+import type { FragmentVariables } from '../execution/collectFields.ts';
 type OnErrorCB = (
   path: ReadonlyArray<string | number>,
   invalidValue: unknown,
@@ -81,7 +88,7 @@ function coerceInputValueImpl(
       onError(
         pathToArray(path),
         inputValue,
-        new GraphQLError(`Expected type "${type.name}" to be an object.`),
+        new GraphQLError(`Expected type "${type}" to be an object.`),
       );
       return;
     }
@@ -98,7 +105,7 @@ function coerceInputValueImpl(
             pathToArray(path),
             inputValue,
             new GraphQLError(
-              `Field "${field.name}" of required type "${typeStr}" was not provided.`,
+              `Field "${type}.${field.name}" of required type "${typeStr}" was not provided.`,
             ),
           );
         }
@@ -122,9 +129,30 @@ function coerceInputValueImpl(
           pathToArray(path),
           inputValue,
           new GraphQLError(
-            `Field "${fieldName}" is not defined by type "${type.name}".` +
+            `Field "${fieldName}" is not defined by type "${type}".` +
               didYouMean(suggestions),
           ),
+        );
+      }
+    }
+    if (type.isOneOf) {
+      const keys = Object.keys(coercedValue);
+      if (keys.length !== 1) {
+        onError(
+          pathToArray(path),
+          inputValue,
+          new GraphQLError(
+            `Exactly one key must be specified for OneOf type "${type}".`,
+          ),
+        );
+      }
+      const key = keys[0];
+      const value = coercedValue[key];
+      if (value === null) {
+        onError(
+          pathToArray(path).concat(key),
+          value,
+          new GraphQLError(`Field "${key}" must be non-null.`),
         );
       }
     }
@@ -144,7 +172,7 @@ function coerceInputValueImpl(
         onError(
           pathToArray(path),
           inputValue,
-          new GraphQLError(`Expected type "${type.name}". ` + error.message, {
+          new GraphQLError(`Expected type "${type}". ` + error.message, {
             originalError: error,
           }),
         );
@@ -155,7 +183,7 @@ function coerceInputValueImpl(
       onError(
         pathToArray(path),
         inputValue,
-        new GraphQLError(`Expected type "${type.name}".`),
+        new GraphQLError(`Expected type "${type}".`),
       );
     }
     return parseResult;
@@ -163,4 +191,159 @@ function coerceInputValueImpl(
   /* c8 ignore next 3 */
   // Not reachable, all possible types have been considered.
   false || invariant(false, 'Unexpected input type: ' + inspect(type));
+}
+/**
+ * Produces a coerced "internal" JavaScript value given a GraphQL Value AST.
+ *
+ * Returns `undefined` when the value could not be validly coerced according to
+ * the provided type.
+ */
+export function coerceInputLiteral(
+  valueNode: ValueNode,
+  type: GraphQLInputType,
+  variableValues?: Maybe<ObjMap<unknown>>,
+  fragmentVariableValues?: Maybe<FragmentVariables>,
+): unknown {
+  if (valueNode.kind === Kind.VARIABLE) {
+    const variableValue = getVariableValue(
+      valueNode,
+      variableValues,
+      fragmentVariableValues,
+    );
+    if (variableValue == null && isNonNullType(type)) {
+      return; // Invalid: intentionally return no value.
+    }
+    // Note: This does no further checking that this variable is correct.
+    // This assumes validated has checked this variable is of the correct type.
+    return variableValue;
+  }
+  if (isNonNullType(type)) {
+    if (valueNode.kind === Kind.NULL) {
+      return; // Invalid: intentionally return no value.
+    }
+    return coerceInputLiteral(
+      valueNode,
+      type.ofType,
+      variableValues,
+      fragmentVariableValues,
+    );
+  }
+  if (valueNode.kind === Kind.NULL) {
+    return null; // Explicitly return the value null.
+  }
+  if (isListType(type)) {
+    if (valueNode.kind !== Kind.LIST) {
+      // Lists accept a non-list value as a list of one.
+      const itemValue = coerceInputLiteral(
+        valueNode,
+        type.ofType,
+        variableValues,
+        fragmentVariableValues,
+      );
+      if (itemValue === undefined) {
+        return; // Invalid: intentionally return no value.
+      }
+      return [itemValue];
+    }
+    const coercedValue: Array<unknown> = [];
+    for (const itemNode of valueNode.values) {
+      let itemValue = coerceInputLiteral(
+        itemNode,
+        type.ofType,
+        variableValues,
+        fragmentVariableValues,
+      );
+      if (itemValue === undefined) {
+        if (
+          itemNode.kind === Kind.VARIABLE &&
+          getVariableValue(itemNode, variableValues, fragmentVariableValues) ==
+            null &&
+          !isNonNullType(type.ofType)
+        ) {
+          // A missing variable within a list is coerced to null.
+          itemValue = null;
+        } else {
+          return; // Invalid: intentionally return no value.
+        }
+      }
+      coercedValue.push(itemValue);
+    }
+    return coercedValue;
+  }
+  if (isInputObjectType(type)) {
+    if (valueNode.kind !== Kind.OBJECT) {
+      return; // Invalid: intentionally return no value.
+    }
+    const coercedValue: {
+      [field: string]: unknown;
+    } = {};
+    const fieldDefs = type.getFields();
+    const hasUndefinedField = valueNode.fields.some(
+      (field) => !Object.hasOwn(fieldDefs, field.name.value),
+    );
+    if (hasUndefinedField) {
+      return; // Invalid: intentionally return no value.
+    }
+    const fieldNodes = new Map(
+      valueNode.fields.map((field) => [field.name.value, field]),
+    );
+    for (const field of Object.values(fieldDefs)) {
+      const fieldNode = fieldNodes.get(field.name);
+      if (
+        !fieldNode ||
+        (fieldNode.value.kind === Kind.VARIABLE &&
+          getVariableValue(
+            fieldNode.value,
+            variableValues,
+            fragmentVariableValues,
+          ) == null)
+      ) {
+        if (isRequiredInputField(field)) {
+          return; // Invalid: intentionally return no value.
+        }
+        if (field.defaultValue !== undefined) {
+          coercedValue[field.name] = field.defaultValue;
+        }
+      } else {
+        const fieldValue = coerceInputLiteral(
+          fieldNode.value,
+          field.type,
+          variableValues,
+          fragmentVariableValues,
+        );
+        if (fieldValue === undefined) {
+          return; // Invalid: intentionally return no value.
+        }
+        coercedValue[field.name] = fieldValue;
+      }
+    }
+    if (type.isOneOf) {
+      const keys = Object.keys(coercedValue);
+      if (keys.length !== 1) {
+        return; // Invalid: not exactly one key, intentionally return no value.
+      }
+      if (coercedValue[keys[0]] === null) {
+        return; // Invalid: value not non-null, intentionally return no value.
+      }
+    }
+    return coercedValue;
+  }
+  const leafType = assertLeafType(type);
+  try {
+    return leafType.parseLiteral(valueNode, variableValues);
+  } catch (_error) {
+    // Invalid: ignore error and intentionally return no value.
+  }
+}
+// Retrieves the variable value for the given variable node.
+function getVariableValue(
+  variableNode: VariableNode,
+  variableValues: Maybe<ObjMap<unknown>>,
+  fragmentVariableValues: Maybe<FragmentVariables> | undefined,
+): unknown {
+  const varName = variableNode.name.value;
+  if (fragmentVariableValues?.signatures[varName]) {
+    return fragmentVariableValues.values[varName];
+  }
+  return variableValues?.[varName];
 }

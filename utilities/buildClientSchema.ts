@@ -2,7 +2,7 @@ import { devAssert } from '../jsutils/devAssert.ts';
 import { inspect } from '../jsutils/inspect.ts';
 import { isObjectLike } from '../jsutils/isObjectLike.ts';
 import { keyValMap } from '../jsutils/keyValMap.ts';
-import { parseValue } from '../language/parser.ts';
+import { parseConstValue } from '../language/parser.ts';
 import type {
   GraphQLFieldConfig,
   GraphQLFieldConfigMap,
@@ -29,6 +29,7 @@ import { introspectionTypes, TypeKind } from '../type/introspection.ts';
 import { specifiedScalarTypes } from '../type/scalars.ts';
 import type { GraphQLSchemaValidationOptions } from '../type/schema.ts';
 import { GraphQLSchema } from '../type/schema.ts';
+import { coerceInputLiteral } from './coerceInputValue.ts';
 import type {
   IntrospectionDirective,
   IntrospectionEnumType,
@@ -44,7 +45,6 @@ import type {
   IntrospectionTypeRef,
   IntrospectionUnionType,
 } from './getIntrospectionQuery.ts';
-import { valueFromAST } from './valueFromAST.ts';
 /**
  * Build a GraphQLSchema for use by client tools.
  *
@@ -66,9 +66,7 @@ export function buildClientSchema(
   (isObjectLike(introspection) && isObjectLike(introspection.__schema)) ||
     devAssert(
       false,
-      `Invalid or incomplete introspection result. Ensure that you are passing "data" property of introspection response and no "errors" was returned alongside: ${inspect(
-        introspection,
-      )}.`,
+      `Invalid or incomplete introspection result. Ensure that you are passing "data" property of introspection response and no "errors" was returned alongside: ${inspect(introspection)}.`,
     );
   // Get the schema from the introspection result.
   const schemaIntrospection = introspection.__schema;
@@ -160,28 +158,24 @@ export function buildClientSchema(
   // Given a type's introspection result, construct the correct
   // GraphQLType instance.
   function buildType(type: IntrospectionType): GraphQLNamedType {
-    // eslint-disable-next-line @typescript-eslint/prefer-optional-chain
-    if (type != null && type.name != null && type.kind != null) {
-      // FIXME: Properly type IntrospectionType, it's a breaking change so fix in v17
-      // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check
-      switch (type.kind) {
-        case TypeKind.SCALAR:
-          return buildScalarDef(type);
-        case TypeKind.OBJECT:
-          return buildObjectDef(type);
-        case TypeKind.INTERFACE:
-          return buildInterfaceDef(type);
-        case TypeKind.UNION:
-          return buildUnionDef(type);
-        case TypeKind.ENUM:
-          return buildEnumDef(type);
-        case TypeKind.INPUT_OBJECT:
-          return buildInputObjectDef(type);
-      }
+    switch (type.kind) {
+      case TypeKind.SCALAR:
+        return buildScalarDef(type);
+      case TypeKind.OBJECT:
+        return buildObjectDef(type);
+      case TypeKind.INTERFACE:
+        return buildInterfaceDef(type);
+      case TypeKind.UNION:
+        return buildUnionDef(type);
+      case TypeKind.ENUM:
+        return buildEnumDef(type);
+      case TypeKind.INPUT_OBJECT:
+        return buildInputObjectDef(type);
     }
-    const typeStr = inspect(type);
+    // Unreachable.
+    // @ts-expect-error
     throw new Error(
-      `Invalid or incomplete introspection result. Ensure that a full introspection query is used in order to build a client schema: ${typeStr}.`,
+      `Invalid or incomplete introspection result. Ensure that a full introspection query is used in order to build a client schema: ${inspect(type)}.`,
     );
   }
   function buildScalarDef(
@@ -284,6 +278,7 @@ export function buildClientSchema(
       name: inputObjectIntrospection.name,
       description: inputObjectIntrospection.description,
       fields: () => buildInputValueDefMap(inputObjectIntrospection.inputFields),
+      isOneOf: inputObjectIntrospection.isOneOf,
     });
   }
   function buildFieldDefMap(
@@ -342,7 +337,10 @@ export function buildClientSchema(
     }
     const defaultValue =
       inputValueIntrospection.defaultValue != null
-        ? valueFromAST(parseValue(inputValueIntrospection.defaultValue), type)
+        ? coerceInputLiteral(
+            parseConstValue(inputValueIntrospection.defaultValue),
+            type,
+          )
         : undefined;
     return {
       description: inputValueIntrospection.description,

@@ -233,14 +233,31 @@ function readNextToken(lexer: Lexer, start: number): Token {
         return createToken(lexer, TokenKind.PAREN_L, position, position + 1);
       case 41: // )
         return createToken(lexer, TokenKind.PAREN_R, position, position + 1);
-      case 46: // .
-        if (
-          body.charCodeAt(position + 1) === 46 &&
-          body.charCodeAt(position + 2) === 46
-        ) {
+      case 46: {
+        // .
+        const nextCode = body.charCodeAt(position + 1);
+        if (nextCode === 46 && body.charCodeAt(position + 2) === 46) {
           return createToken(lexer, TokenKind.SPREAD, position, position + 3);
         }
+        if (nextCode === 46) {
+          throw syntaxError(
+            lexer.source,
+            position,
+            'Unexpected "..", did you mean "..."?',
+          );
+        } else if (isDigit(nextCode)) {
+          const digits = lexer.source.body.slice(
+            position + 1,
+            readDigits(lexer, position + 1, nextCode),
+          );
+          throw syntaxError(
+            lexer.source,
+            position,
+            `Invalid number, expected digit before ".", did you mean "0.${digits}"?`,
+          );
+        }
         break;
+      }
       case 58: // :
         return createToken(lexer, TokenKind.COLON, position, position + 1);
       case 61: // =
@@ -288,8 +305,8 @@ function readNextToken(lexer: Lexer, start: number): Token {
       code === 39
         ? 'Unexpected single quote character (\'), did you mean to use a double quote (")?'
         : isUnicodeScalarValue(code) || isSupplementaryCodePoint(body, position)
-        ? `Unexpected character: ${printCodePointAt(lexer, position)}.`
-        : `Invalid character: ${printCodePointAt(lexer, position)}.`,
+          ? `Unexpected character: ${printCodePointAt(lexer, position)}.`
+          : `Invalid character: ${printCodePointAt(lexer, position)}.`,
     );
   }
   return createToken(lexer, TokenKind.EOF, bodyLength, bodyLength);
@@ -375,10 +392,7 @@ function readNumber(lexer: Lexer, start: number, firstCode: number): Token {
       throw syntaxError(
         lexer.source,
         position,
-        `Invalid number, unexpected digit after 0: ${printCodePointAt(
-          lexer,
-          position,
-        )}.`,
+        `Invalid number, unexpected digit after 0: ${printCodePointAt(lexer, position)}.`,
       );
     }
   } else {
@@ -408,10 +422,7 @@ function readNumber(lexer: Lexer, start: number, firstCode: number): Token {
     throw syntaxError(
       lexer.source,
       position,
-      `Invalid number, expected digit but got: ${printCodePointAt(
-        lexer,
-        position,
-      )}.`,
+      `Invalid number, expected digit but got: ${printCodePointAt(lexer, position)}.`,
     );
   }
   return createToken(
@@ -430,10 +441,7 @@ function readDigits(lexer: Lexer, start: number, firstCode: number): number {
     throw syntaxError(
       lexer.source,
       start,
-      `Invalid number, expected digit but got: ${printCodePointAt(
-        lexer,
-        start,
-      )}.`,
+      `Invalid number, expected digit but got: ${printCodePointAt(lexer, start)}.`,
     );
   }
   const body = lexer.source.body;
@@ -503,10 +511,7 @@ function readString(lexer: Lexer, start: number): Token {
       throw syntaxError(
         lexer.source,
         position,
-        `Invalid character within String: ${printCodePointAt(
-          lexer,
-          position,
-        )}.`,
+        `Invalid character within String: ${printCodePointAt(lexer, position)}.`,
       );
     }
   }
@@ -544,10 +549,7 @@ function readEscapedUnicodeVariableWidth(
   throw syntaxError(
     lexer.source,
     position,
-    `Invalid Unicode escape sequence: "${body.slice(
-      position,
-      position + size,
-    )}".`,
+    `Invalid Unicode escape sequence: "${body.slice(position, position + size)}".`,
   );
 }
 function readEscapedUnicodeFixedWidth(
@@ -620,10 +622,10 @@ function readHexDigit(code: number): number {
   return code >= 48 && code <= 57 // 0-9
     ? code - 48
     : code >= 65 && code <= 70 // A-F
-    ? code - 55
-    : code >= 97 && code <= 102 // a-f
-    ? code - 87
-    : -1;
+      ? code - 55
+      : code >= 97 && code <= 102 // a-f
+        ? code - 87
+        : -1;
 }
 /**
  * | Escaped Character | Code Point | Character Name               |
@@ -661,10 +663,7 @@ function readEscapedCharacter(lexer: Lexer, position: number): EscapeSequence {
   throw syntaxError(
     lexer.source,
     position,
-    `Invalid character escape sequence: "${body.slice(
-      position,
-      position + 2,
-    )}".`,
+    `Invalid character escape sequence: "${body.slice(position, position + 2)}".`,
   );
 }
 /**
@@ -744,10 +743,7 @@ function readBlockString(lexer: Lexer, start: number): Token {
       throw syntaxError(
         lexer.source,
         position,
-        `Invalid character within String: ${printCodePointAt(
-          lexer,
-          position,
-        )}.`,
+        `Invalid character within String: ${printCodePointAt(lexer, position)}.`,
       );
     }
   }
