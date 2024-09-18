@@ -1,191 +1,255 @@
-'use strict';
-Object.defineProperty(exports, '__esModule', { value: true });
-exports.StreamItemsRecord =
-  exports.DeferredFragmentRecord =
-  exports.filterSubsequentPayloads =
-  exports.yieldSubsequentPayloads =
-    void 0;
-const Path_js_1 = require('../jsutils/Path.js');
-const promiseWithResolvers_js_1 = require('../jsutils/promiseWithResolvers.js');
-function yieldSubsequentPayloads(subsequentPayloads) {
-  let isDone = false;
-  async function next() {
-    if (isDone) {
-      return { value: undefined, done: true };
-    }
-    await Promise.race(Array.from(subsequentPayloads).map((p) => p.promise));
-    if (isDone) {
-      // a different call to next has exhausted all payloads
-      return { value: undefined, done: true };
-    }
-    const incremental = getCompletedIncrementalResults(subsequentPayloads);
-    const hasNext = subsequentPayloads.size > 0;
-    if (!incremental.length && hasNext) {
-      return next();
-    }
-    if (!hasNext) {
-      isDone = true;
-    }
-    return {
-      value: incremental.length ? { incremental, hasNext } : { hasNext },
-      done: false,
-    };
-  }
-  function returnStreamIterators() {
-    const promises = [];
-    subsequentPayloads.forEach((incrementalDataRecord) => {
-      if (
-        isStreamItemsRecord(incrementalDataRecord) &&
-        incrementalDataRecord.asyncIterator?.return
-      ) {
-        promises.push(incrementalDataRecord.asyncIterator.return());
-      }
-    });
-    return Promise.all(promises);
-  }
-  return {
-    [Symbol.asyncIterator]() {
-      return this;
-    },
-    next,
-    async return() {
-      await returnStreamIterators();
-      isDone = true;
-      return { value: undefined, done: true };
-    },
-    async throw(error) {
-      await returnStreamIterators();
-      isDone = true;
-      return Promise.reject(error);
-    },
-  };
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.buildIncrementalResponse = void 0;
+const invariant_js_1 = require("../jsutils/invariant.js");
+const Path_js_1 = require("../jsutils/Path.js");
+const IncrementalGraph_js_1 = require("./IncrementalGraph.js");
+const types_js_1 = require("./types.js");
+function buildIncrementalResponse(context, result, errors, incrementalDataRecords) {
+    const incrementalPublisher = new IncrementalPublisher(context);
+    return incrementalPublisher.buildResponse(result, errors, incrementalDataRecords);
 }
-exports.yieldSubsequentPayloads = yieldSubsequentPayloads;
-function getCompletedIncrementalResults(subsequentPayloads) {
-  const incrementalResults = [];
-  for (const incrementalDataRecord of subsequentPayloads) {
-    const incrementalResult = {};
-    if (!incrementalDataRecord.isCompleted) {
-      continue;
+exports.buildIncrementalResponse = buildIncrementalResponse;
+/**
+ * This class is used to publish incremental results to the client, enabling semi-concurrent
+ * execution while preserving result order.
+ *
+ * @internal
+ */
+class IncrementalPublisher {
+    constructor(context) {
+        this._context = context;
+        this._nextId = 0;
+        this._incrementalGraph = new IncrementalGraph_js_1.IncrementalGraph();
     }
-    subsequentPayloads.delete(incrementalDataRecord);
-    if (isStreamItemsRecord(incrementalDataRecord)) {
-      const items = incrementalDataRecord.items;
-      if (incrementalDataRecord.isCompletedAsyncIterator) {
-        // async iterable resolver just finished but there may be pending payloads
-        continue;
-      }
-      incrementalResult.items = items;
-    } else {
-      const data = incrementalDataRecord.data;
-      incrementalResult.data = data ?? null;
+    buildResponse(data, errors, incrementalDataRecords) {
+        const newRootNodes = this._incrementalGraph.getNewRootNodes(incrementalDataRecords);
+        const pending = this._toPendingResults(newRootNodes);
+        const initialResult = errors === undefined
+            ? { data, pending, hasNext: true }
+            : { errors, data, pending, hasNext: true };
+        return {
+            initialResult,
+            subsequentResults: this._subscribe(),
+        };
     }
-    incrementalResult.path = incrementalDataRecord.path;
-    if (incrementalDataRecord.label != null) {
-      incrementalResult.label = incrementalDataRecord.label;
+    _toPendingResults(newRootNodes) {
+        const pendingResults = [];
+        for (const node of newRootNodes) {
+            const id = String(this._getNextId());
+            node.id = id;
+            const pendingResult = {
+                id,
+                path: (0, Path_js_1.pathToArray)(node.path),
+            };
+            if (node.label !== undefined) {
+                pendingResult.label = node.label;
+            }
+            pendingResults.push(pendingResult);
+        }
+        return pendingResults;
     }
-    if (incrementalDataRecord.errors.length > 0) {
-      incrementalResult.errors = incrementalDataRecord.errors;
+    _getNextId() {
+        return String(this._nextId++);
     }
-    incrementalResults.push(incrementalResult);
-  }
-  return incrementalResults;
-}
-function filterSubsequentPayloads(
-  subsequentPayloads,
-  nullPath,
-  currentIncrementalDataRecord,
-) {
-  const nullPathArray = (0, Path_js_1.pathToArray)(nullPath);
-  subsequentPayloads.forEach((incrementalDataRecord) => {
-    if (incrementalDataRecord === currentIncrementalDataRecord) {
-      // don't remove payload from where error originates
-      return;
+    _subscribe() {
+        let isDone = false;
+        const _next = async () => {
+            if (isDone) {
+                await this._returnAsyncIteratorsIgnoringErrors();
+                return { value: undefined, done: true };
+            }
+            const context = {
+                pending: [],
+                incremental: [],
+                completed: [],
+            };
+            let batch = this._incrementalGraph.currentCompletedBatch();
+            do {
+                for (const completedResult of batch) {
+                    this._handleCompletedIncrementalData(completedResult, context);
+                }
+                const { incremental, completed } = context;
+                if (incremental.length > 0 || completed.length > 0) {
+                    const hasNext = this._incrementalGraph.hasNext();
+                    if (!hasNext) {
+                        isDone = true;
+                    }
+                    const subsequentIncrementalExecutionResult = { hasNext };
+                    const pending = context.pending;
+                    if (pending.length > 0) {
+                        subsequentIncrementalExecutionResult.pending = pending;
+                    }
+                    if (incremental.length > 0) {
+                        subsequentIncrementalExecutionResult.incremental = incremental;
+                    }
+                    if (completed.length > 0) {
+                        subsequentIncrementalExecutionResult.completed = completed;
+                    }
+                    return { value: subsequentIncrementalExecutionResult, done: false };
+                }
+                // eslint-disable-next-line no-await-in-loop
+                batch = await this._incrementalGraph.nextCompletedBatch();
+            } while (batch !== undefined);
+            await this._returnAsyncIteratorsIgnoringErrors();
+            return { value: undefined, done: true };
+        };
+        const _return = async () => {
+            isDone = true;
+            this._incrementalGraph.abort();
+            await this._returnAsyncIterators();
+            return { value: undefined, done: true };
+        };
+        const _throw = async (error) => {
+            isDone = true;
+            this._incrementalGraph.abort();
+            await this._returnAsyncIterators();
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+            return Promise.reject(error);
+        };
+        return {
+            [Symbol.asyncIterator]() {
+                return this;
+            },
+            next: _next,
+            return: _return,
+            throw: _throw,
+        };
     }
-    for (let i = 0; i < nullPathArray.length; i++) {
-      if (incrementalDataRecord.path[i] !== nullPathArray[i]) {
-        // incrementalDataRecord points to a path unaffected by this payload
-        return;
-      }
+    _handleCompletedIncrementalData(completedIncrementalData, context) {
+        if ((0, types_js_1.isCompletedExecutionGroup)(completedIncrementalData)) {
+            this._handleCompletedExecutionGroup(completedIncrementalData, context);
+        }
+        else {
+            this._handleCompletedStreamItems(completedIncrementalData, context);
+        }
     }
-    // incrementalDataRecord path points to nulled error field
-    if (
-      isStreamItemsRecord(incrementalDataRecord) &&
-      incrementalDataRecord.asyncIterator?.return
-    ) {
-      incrementalDataRecord.asyncIterator.return().catch(() => {
-        // ignore error
-      });
+    _handleCompletedExecutionGroup(completedExecutionGroup, context) {
+        if ((0, types_js_1.isFailedExecutionGroup)(completedExecutionGroup)) {
+            for (const deferredFragmentRecord of completedExecutionGroup
+                .pendingExecutionGroup.deferredFragmentRecords) {
+                const id = deferredFragmentRecord.id;
+                if (!this._incrementalGraph.removeDeferredFragment(deferredFragmentRecord)) {
+                    // This can occur if multiple deferred grouped field sets error for a fragment.
+                    continue;
+                }
+                (id !== undefined) || (0, invariant_js_1.invariant)(false);
+                context.completed.push({
+                    id,
+                    errors: completedExecutionGroup.errors,
+                });
+            }
+            return;
+        }
+        this._incrementalGraph.addCompletedSuccessfulExecutionGroup(completedExecutionGroup);
+        for (const deferredFragmentRecord of completedExecutionGroup
+            .pendingExecutionGroup.deferredFragmentRecords) {
+            const completion = this._incrementalGraph.completeDeferredFragment(deferredFragmentRecord);
+            if (completion === undefined) {
+                continue;
+            }
+            const id = deferredFragmentRecord.id;
+            (id !== undefined) || (0, invariant_js_1.invariant)(false);
+            const incremental = context.incremental;
+            const { newRootNodes, successfulExecutionGroups } = completion;
+            context.pending.push(...this._toPendingResults(newRootNodes));
+            for (const successfulExecutionGroup of successfulExecutionGroups) {
+                const { bestId, subPath } = this._getBestIdAndSubPath(id, deferredFragmentRecord, successfulExecutionGroup);
+                const incrementalEntry = {
+                    ...successfulExecutionGroup.result,
+                    id: bestId,
+                };
+                if (subPath !== undefined) {
+                    incrementalEntry.subPath = subPath;
+                }
+                incremental.push(incrementalEntry);
+            }
+            context.completed.push({ id });
+        }
     }
-    subsequentPayloads.delete(incrementalDataRecord);
-  });
-}
-exports.filterSubsequentPayloads = filterSubsequentPayloads;
-/** @internal */
-class DeferredFragmentRecord {
-  constructor(opts) {
-    this.type = 'defer';
-    this.label = opts.label;
-    this.path = (0, Path_js_1.pathToArray)(opts.path);
-    this.parentContext = opts.parentContext;
-    this.errors = [];
-    this._subsequentPayloads = opts.subsequentPayloads;
-    this._subsequentPayloads.add(this);
-    this.isCompleted = false;
-    this.data = null;
-    const { promise, resolve } = (0,
-    promiseWithResolvers_js_1.promiseWithResolvers)();
-    this._resolve = resolve;
-    this.promise = promise.then((data) => {
-      this.data = data;
-      this.isCompleted = true;
-    });
-  }
-  addData(data) {
-    const parentData = this.parentContext?.promise;
-    if (parentData) {
-      this._resolve?.(parentData.then(() => data));
-      return;
+    _handleCompletedStreamItems(streamItemsResult, context) {
+        const streamRecord = streamItemsResult.streamRecord;
+        const id = streamRecord.id;
+        (id !== undefined) || (0, invariant_js_1.invariant)(false);
+        if (streamItemsResult.errors !== undefined) {
+            context.completed.push({
+                id,
+                errors: streamItemsResult.errors,
+            });
+            this._incrementalGraph.removeStream(streamRecord);
+            if ((0, types_js_1.isCancellableStreamRecord)(streamRecord)) {
+                (this._context.cancellableStreams !== undefined) || (0, invariant_js_1.invariant)(false);
+                this._context.cancellableStreams.delete(streamRecord);
+                streamRecord.earlyReturn().catch(() => {
+                    /* c8 ignore next 1 */
+                    // ignore error
+                });
+            }
+        }
+        else if (streamItemsResult.result === undefined) {
+            context.completed.push({ id });
+            this._incrementalGraph.removeStream(streamRecord);
+            if ((0, types_js_1.isCancellableStreamRecord)(streamRecord)) {
+                (this._context.cancellableStreams !== undefined) || (0, invariant_js_1.invariant)(false);
+                this._context.cancellableStreams.delete(streamRecord);
+            }
+        }
+        else {
+            const incrementalEntry = {
+                id,
+                ...streamItemsResult.result,
+            };
+            context.incremental.push(incrementalEntry);
+            const incrementalDataRecords = streamItemsResult.incrementalDataRecords;
+            if (incrementalDataRecords !== undefined) {
+                const newRootNodes = this._incrementalGraph.getNewRootNodes(incrementalDataRecords);
+                context.pending.push(...this._toPendingResults(newRootNodes));
+            }
+        }
     }
-    this._resolve?.(data);
-  }
-}
-exports.DeferredFragmentRecord = DeferredFragmentRecord;
-/** @internal */
-class StreamItemsRecord {
-  constructor(opts) {
-    this.type = 'stream';
-    this.items = null;
-    this.label = opts.label;
-    this.path = (0, Path_js_1.pathToArray)(opts.path);
-    this.parentContext = opts.parentContext;
-    this.asyncIterator = opts.asyncIterator;
-    this.errors = [];
-    this._subsequentPayloads = opts.subsequentPayloads;
-    this._subsequentPayloads.add(this);
-    this.isCompleted = false;
-    this.items = null;
-    const { promise, resolve } = (0,
-    promiseWithResolvers_js_1.promiseWithResolvers)();
-    this._resolve = resolve;
-    this.promise = promise.then((items) => {
-      this.items = items;
-      this.isCompleted = true;
-    });
-  }
-  addItems(items) {
-    const parentData = this.parentContext?.promise;
-    if (parentData) {
-      this._resolve?.(parentData.then(() => items));
-      return;
+    _getBestIdAndSubPath(initialId, initialDeferredFragmentRecord, completedExecutionGroup) {
+        let maxLength = (0, Path_js_1.pathToArray)(initialDeferredFragmentRecord.path).length;
+        let bestId = initialId;
+        for (const deferredFragmentRecord of completedExecutionGroup
+            .pendingExecutionGroup.deferredFragmentRecords) {
+            if (deferredFragmentRecord === initialDeferredFragmentRecord) {
+                continue;
+            }
+            const id = deferredFragmentRecord.id;
+            // TODO: add test case for when an fragment has not been released, but might be processed for the shortest path.
+            /* c8 ignore next 3 */
+            if (id === undefined) {
+                continue;
+            }
+            const fragmentPath = (0, Path_js_1.pathToArray)(deferredFragmentRecord.path);
+            const length = fragmentPath.length;
+            if (length > maxLength) {
+                maxLength = length;
+                bestId = id;
+            }
+        }
+        const subPath = completedExecutionGroup.path.slice(maxLength);
+        return {
+            bestId,
+            subPath: subPath.length > 0 ? subPath : undefined,
+        };
     }
-    this._resolve?.(items);
-  }
-  setIsCompletedAsyncIterator() {
-    this.isCompletedAsyncIterator = true;
-  }
-}
-exports.StreamItemsRecord = StreamItemsRecord;
-function isStreamItemsRecord(incrementalDataRecord) {
-  return incrementalDataRecord.type === 'stream';
+    async _returnAsyncIterators() {
+        const cancellableStreams = this._context.cancellableStreams;
+        if (cancellableStreams === undefined) {
+            return;
+        }
+        const promises = [];
+        for (const streamRecord of cancellableStreams) {
+            if (streamRecord.earlyReturn !== undefined) {
+                promises.push(streamRecord.earlyReturn());
+            }
+        }
+        await Promise.all(promises);
+    }
+    async _returnAsyncIteratorsIgnoringErrors() {
+        await this._returnAsyncIterators().catch(() => {
+            // Ignore errors
+        });
+    }
 }
